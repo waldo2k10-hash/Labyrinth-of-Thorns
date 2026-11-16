@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from "react";
-import { Play, Sparkles, Compass, Heart, BookOpen, RotateCcw, Cpu } from "lucide-react";
+import { Play, Sparkles, Compass, Heart, BookOpen, RotateCcw, Cpu, Palette } from "lucide-react";
 import { TITLE_KEY_ART } from "../utils/portraits";
 import type { DifficultyMode } from "../types/game";
 import { DIFFICULTY_CONFIG } from "../utils/tactics";
@@ -29,6 +29,7 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
 }) => {
   const [aiStatus, setAiStatus] = useState<"checking" | "connected" | "fallback">("checking");
   const [aiMessage, setAiMessage] = useState<string>("");
+  const [comfyStatus, setComfyStatus] = useState<"checking" | "connected" | "offline">("checking");
 
   useEffect(() => {
     let active = true;
@@ -46,6 +47,17 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
       .catch(() => {
         if (active) setAiStatus("fallback");
       });
+
+    fetch("/api/comfy/status")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!active) return;
+        setComfyStatus(data.online ? "connected" : "offline");
+      })
+      .catch(() => {
+        if (active) setComfyStatus("offline");
+      });
+
     return () => {
       active = false;
     };
@@ -87,6 +99,24 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
                   : aiStatus === "checking"
                   ? "Void AI: Connecting..."
                   : "Void AI: Procedural Engine"}
+              </span>
+            </div>
+            <div
+              className={`inline-flex items-center gap-1.5 border px-2.5 py-1 rounded text-xs font-mono ${
+                comfyStatus === "connected"
+                  ? "border-pink-500/40 bg-pink-950/40 text-pink-300"
+                  : comfyStatus === "checking"
+                  ? "border-amber-500/40 bg-amber-950/30 text-amber-300"
+                  : "border-white/10 bg-white/5 text-[#f2efe9]/50"
+              }`}
+            >
+              <Palette className="w-3 h-3" />
+              <span>
+                {comfyStatus === "connected"
+                  ? "ComfyUI: Ready"
+                  : comfyStatus === "checking"
+                  ? "ComfyUI: Checking..."
+                  : "ComfyUI: Offline"}
               </span>
             </div>
           </div>

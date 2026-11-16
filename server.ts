@@ -10,6 +10,9 @@ const PORT = Number(process.env.PORT) || 3000;
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434/api/chat";
 const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "hf.co/ReadyArt/Omega-Arsenal-12B-GGUF:Q3_K_M";
 
+// COMFYUI CONFIGURATION
+const COMFYUI_URL = process.env.COMFYUI_URL || "http://127.0.0.1:8188";
+
 // Helper to call Ollama with guaranteed JSON parsing and a timeout
 async function callOllamaJson<T>(prompt: string, schemaHint?: string): Promise<T> {
   const controller = new AbortController();
@@ -99,6 +102,93 @@ async function generateAIResponse(prompt: string): Promise<string> {
     clearTimeout(timeoutId);
   }
 }
+
+// Generate an image via the local ComfyUI API
+async function generateComfyImage(
+  promptText: string,
+  negativeText = "worst quality, low quality, blurry, deformed hands, extra fingers, bad anatomy, text, watermark, signature"
+): Promise<{ filename: string; url: string }> {
+  const seed = Math.floor(Math.random() * 1000000000);
+  const workflow = {
+    "1": {
+      inputs: { ckpt_name: "StableMondAI-SDG.safetensors" },
+      class_type: "CheckpointLoaderSimple",
+    },
+    "2": {
+      inputs: {
+        model: ["1", 0],
+        seed,
+        steps: 20,
+        cfg: 7,
+        sampler_name: "euler",
+        scheduler: "simple",
+        denoise: 1,
+        positive: ["3", 0],
+        negative: ["5", 0],
+        latent_image: ["4", 0],
+      },
+      class_type: "KSampler",
+    },
+    "3": {
+      inputs: { text: promptText, clip: ["1", 1] },
+      class_type: "CLIPTextEncode",
+    },
+    "4": {
+      inputs: { width: 512, height: 768, batch_size: 1 },
+      class_type: "EmptyLatentImage",
+    },
+    "5": {
+      inputs: { text: negativeText, clip: ["1", 1] },
+      class_type: "CLIPTextEncode",
+    },
+    "8": {
+      inputs: { samples: ["2", 0], vae: ["1", 2] },
+      class_type: "VAEDecode",
+    },
+    "10": {
+      inputs: { filename_prefix: "Labyrinth", images: ["8", 0] },
+      class_type: "SaveImage",
+    },
+  };
+
+  const submitRes = await fetch(`${COMFYUI_URL}/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow }),
+  });
+
+  if (!submitRes.ok) {
+    throw new Error(`ComfyUI queue failed: ${submitRes.status} ${submitRes.statusText}`);
+  }
+
+  const { prompt_id } = (await submitRes.json()) as { prompt_id: string };
+  if (!prompt_id) {
+    throw new Error("ComfyUI did not return a prompt_id");
+  }
+
+  // Poll for completion (up to 45s)
+  const startTime = Date.now();
+  while (Date.now() - startTime < 45000) {
+    await new Promise((r) => setTimeout(r, 1200));
+    try {
+      const histRes = await fetch(`${COMFYUI_URL}/history/${prompt_id}`);
+      if (histRes.ok) {
+        const histData = (await histRes.json()) as Record<string, any>;
+        if (histData[prompt_id]?.outputs?.["10"]?.images?.[0]?.filename) {
+          const filename = histData[prompt_id].outputs["10"].images[0].filename;
+          return {
+            filename,
+            url: `/api/comfy/image/${encodeURIComponent(filename)}`,
+          };
+        }
+      }
+    } catch {
+      // Continue polling
+    }
+  }
+
+  throw new Error("ComfyUI image generation timed out");
+}
 const ARCHETYPE_LIST = [
   "arachne",
   "lamia",
@@ -185,6 +275,88 @@ async function startServer() {
       res.json({ status: "connected", message: testResponse });
     } catch {
       res.status(500).json({ status: "disconnected", message: "The Void is unreachable." });
+    }
+  });
+
+  // ComfyUI Status Route
+  app.get("/api/comfy/status", async (_req, res) => {
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 2500);
+      const statsRes = await fetch(`${COMFYUI_URL}/system_stats`, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (statsRes.ok) {
+        const data = (await statsRes.json()) as any;
+        const gpuName = data?.devices?.[0]?.name || "Local GPU";
+        res.json({ online: true, gpu: gpuName, checkpoint: "StableMondAI-SDG.safetensors" });
+        return;
+      }
+      res.json({ online: false });
+    } catch {
+      res.json({ online: false });
+    }
+  });
+
+  // ComfyUI Image Generation Route
+  app.post("/api/comfy/generate", async (req, res) => {
+    try {
+      const {
+        prompt,
+        archetype = "succubus",
+        stage = "portrait",
+        visualTraits,
+      } = req.body ?? {};
+
+      let finalPrompt = prompt;
+      if (!finalPrompt) {
+        const archetypeBase: Record<string, string> = {
+          arachne: "1girl, spider girl, arachne, gothic boudoir, silver silk webs, multiple spider legs behind back, glowing purple eyes, pale skin, elegant",
+          lamia: "1girl, snake girl, lamia, iridescent dark scales, golden serpentine eyes, candlelit stone temple, mesmerizing, regal posture",
+          succubus: "1girl, demon girl, succubus, curved dark horns, bat wings, velvet boudoir, rose petals, embers, sensual smirk, glowing amber eyes",
+          moth: "1girl, moth girl, luna mothkin, large translucent moth wings, soft fluffy neck ruff, glowing antennae, bioluminescent spore dust",
+          alraune: "1girl, plant girl, alraune flower nymph, overgrown rose conservatory, rose vines, crimson flower petals, floral hair ornament, seductive bloom",
+          slime: "1girl, slime girl, translucent glowing liquid body, gelatinous slime tendrils, soft aquatic luminescence, delicate and fluid",
+          fungal: "1girl, mushroom dryad, fungal spore cloak, bioluminescent glowing mushroom caps, misty overgrown arches, ethereal glow",
+        };
+
+        const stageModifiers: Record<string, string> = {
+          portrait: "character portrait, upper body, beautiful detailed anime face, masterpiece, looking at viewer",
+          battle: "dynamic battle confrontation, reaching forward, glowing aura, intense gothic atmosphere",
+          close: "close-up portrait, romantic intimate proximity, gentle embrace, flushed cheeks, soft romantic lighting",
+          deep: "lost in sweet reverie, euphoric trance, cocooned in soft velvet embrace, dreamlike misty haze",
+          kiss: "passionate romantic kiss, tender kiss, lips touching, closed eyes, highly emotional, cinematic lighting, masterpiece",
+        };
+
+        const base = archetypeBase[archetype] || archetypeBase.succubus;
+        const stageMod = stageModifiers[stage] || stageModifiers.portrait;
+        const extraTraits = visualTraits ? `, ${visualTraits}` : "";
+        finalPrompt = `masterpiece, highly detailed, gothic romance, ${base}${extraTraits}, ${stageMod}`;
+      }
+
+      const result = await generateComfyImage(finalPrompt);
+      res.json({ ok: true, ...result });
+    } catch (err: any) {
+      console.error("ComfyUI generation error:", err);
+      res.status(500).json({ ok: false, error: err.message || "Failed to generate image" });
+    }
+  });
+
+  // Proxy / View ComfyUI generated image
+  app.get("/api/comfy/image/:filename", async (req, res) => {
+    try {
+      const filename = path.basename(req.params.filename);
+      const comfyViewUrl = `${COMFYUI_URL}/view?filename=${encodeURIComponent(filename)}&type=output`;
+      const imgRes = await fetch(comfyViewUrl);
+      if (!imgRes.ok) {
+        res.status(imgRes.status).send("Image not found on ComfyUI");
+        return;
+      }
+      res.setHeader("Content-Type", imgRes.headers.get("content-type") || "image/png");
+      res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+      const arrayBuffer = await imgRes.arrayBuffer();
+      res.send(Buffer.from(arrayBuffer));
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || "Failed to fetch image" });
     }
   });
 

@@ -12,16 +12,24 @@
     "inputs": {
       "seed": 0,
       "steps": 20,
-      "cfg": 8,
+      "cfg": 7,
       "sampler_name": "euler",
       "scheduler": "simple",
       "denoise": 1,
+      "model": [
+        "1",
+        0
+      ],
       "positive": [
         "3",
         0
       ],
       "negative": [
         "5",
+        0
+      ],
+      "latent_image": [
+        "4",
         0
       ]
     },
@@ -32,7 +40,7 @@
   },
   "3": {
     "inputs": {
-      "text": "",
+      "text": "masterpiece, highly detailed, 1girl, gothic fantasy, ethereal glowing eyes, beautiful anime portrait",
       "clip": [
         "1",
         1
@@ -40,12 +48,23 @@
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "CLIP Text Encode (Prompt)"
+      "title": "Positive Prompt"
+    }
+  },
+  "4": {
+    "inputs": {
+      "width": 512,
+      "height": 768,
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "Empty Latent Image"
     }
   },
   "5": {
     "inputs": {
-      "text": "",
+      "text": "worst quality, low quality, blurry, deformed hands, extra fingers, bad anatomy, text, watermark, signature",
       "clip": [
         "1",
         1
@@ -53,7 +72,7 @@
     },
     "class_type": "CLIPTextEncode",
     "_meta": {
-      "title": "CLIP Text Encode (Prompt)"
+      "title": "Negative Prompt"
     }
   },
   "8": {
@@ -74,7 +93,7 @@
   },
   "10": {
     "inputs": {
-      "filename_prefix": "ComfyUI",
+      "filename_prefix": "Labyrinth",
       "images": [
         "8",
         0
