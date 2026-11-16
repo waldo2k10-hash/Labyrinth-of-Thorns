@@ -934,9 +934,9 @@ MECHANICAL RULES:
       };
 
       res.json(safeOutcome);
-    } catch (err) {
-      const { status, message } = extractErrorMessage(err);
-      if (isQuotaExceeded(status, message)) {
+    } catch (err: any) {
+      console.warn("AI turn failed or timed out. Falling back to procedural engine:", err?.message || err);
+      {
         const body = req.body ?? {};
         const protag = String(body.protagonistName ?? "Ket");
         const isSeductionBattle = body.gameMode === "SEDUCTION_BATTLE";
@@ -1285,7 +1285,6 @@ MECHANICAL RULES:
         });
         return;
       }
-      res.status(status).json({ error: message });
     }
   });
 
