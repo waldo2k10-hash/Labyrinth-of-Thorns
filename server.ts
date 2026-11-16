@@ -1,21 +1,70 @@
 import "dotenv/config";
 import express from "express";
-import fetch from "node-fetch";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = 3000;
+const PORT = Number(process.env.PORT) || 3000;
 
-// OLLAMA CONFIGURATION (replacing GoogleGenAI)
-// const ai = new GoogleGenAI({...});  // REMOVED
-
-// Configuration from environment
+// OLLAMA CONFIGURATION
 const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434/api/chat";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "hf.co/ReadyArt/Omega-Arsenal-12B-GGUF";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "hf.co/ReadyArt/Omega-Arsenal-12B-GGUF:Q3_K_M";
 
-// AI Response Generator using local Ollama instance
-async function generateAIResponse(prompt: string, context?: any): Promise<string> {
+// Helper to call Ollama with guaranteed JSON parsing and a timeout
+async function callOllamaJson<T>(prompt: string, schemaHint?: string): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 25000);
+
+  try {
+    const systemPrompt = `You are the Game Master & Dynamic Monster-Girl Engine for "The Euphoric Void" (Gothic Romance & Seduction Battle RPG).
+You must output valid JSON only. Do not include markdown codeblocks or thinking tags.${
+      schemaHint ? ` Ensure your JSON adheres to this schema:\n${schemaHint}` : ""
+    }`;
+
+    const response = await fetch(OLLAMA_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: prompt },
+        ],
+        format: "json",
+        stream: false,
+      }),
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama API error: ${response.status}`);
+    }
+
+    const data = (await response.json()) as { message?: { content?: string } };
+    let text = (data.message?.content ?? "").trim();
+
+    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (jsonMatch) {
+      text = jsonMatch[1].trim();
+    } else {
+      const start = text.indexOf("{");
+      const end = text.lastIndexOf("}");
+      if (start !== -1 && end !== -1 && end > start) {
+        text = text.substring(start, end + 1);
+      }
+    }
+
+    return JSON.parse(text) as T;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+// AI Response Generator for status check
+async function generateAIResponse(prompt: string): Promise<string> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 12000);
+
   try {
     const response = await fetch(OLLAMA_URL, {
       method: "POST",
@@ -26,26 +75,30 @@ async function generateAIResponse(prompt: string, context?: any): Promise<string
           {
             role: "system",
             content:
-              "You are the Narrator of The Euphoric Void. Tone: Psychological, liminal, and oppressive. Focus on the psychological stats: Tether, Ego, and Intoxication.",
+              "You are the Narrator of The Euphoric Void. Tone: Psychological, liminal, and oppressive. Keep answers to 1-2 evocative sentences.",
           },
           { role: "user", content: prompt },
         ],
         stream: false,
       }),
+      signal: controller.signal,
     });
 
     if (!response.ok) {
       throw new Error(`Ollama API error: ${response.status}`);
     }
 
-    const data = await response.json();
-    return data.message.content;
+    const data = (await response.json()) as { message?: { content?: string } };
+    let text = (data.message?.content ?? "").trim();
+    text = text.replace(/<\|channel>[\s\S]*?<channel\|>/g, "").trim();
+    return text || "The Void listens in silence.";
   } catch (error) {
     console.error("Ollama Connection Error:", error);
-    return "The Void remains silent... (Check if Ollama is running)";
+    return "The Void whispers from within the shadows...";
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
-
 const ARCHETYPE_LIST = [
   "arachne",
   "lamia",
@@ -123,16 +176,21 @@ async function startServer() {
   const app = express();
   app.use(express.json({ limit: "1mb" }));
 
+  // AI Status Test Route - pings Ollama to verify connection
+  app.get("/api/ai/test", async (_req, res) => {
+    try {
+      const testResponse = await generateAIResponse(
+        "Give me a one-sentence confirmation that you are connected to the Euphoric Void. Be atmospheric."
+      );
+      res.json({ status: "connected", message: testResponse });
+    } catch {
+      res.status(500).json({ status: "disconnected", message: "The Void is unreachable." });
+    }
+  });
+
   // Initialize a Dream District floor in The Euphoric Void
   app.post("/api/game/init-session", async (req, res) => {
     try {
-      if (!process.env.GEMINI_API_KEY) {
-        res.status(500).json({
-          error: "GEMINI_API_KEY is not configured in environment secrets.",
-        });
-        return;
-      }
-
       const {
         protagonistName = "Ket",
         floor = 1,
@@ -175,80 +233,37 @@ CONTENT & AGENCY GUIDELINES:
   3. intent "social" ([Social])
   4. intent "mental" ([Mental])`;
 
-      const response = await withRetry(() =>
-        ai.models.generateContent({
-          model: MODEL_NAME,
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                floorTitle: { type: Type.STRING },
-                protagonistOpening: { type: Type.STRING },
-                hunters: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      name: { type: Type.STRING },
-                      title: { type: Type.STRING },
-                      species: { type: Type.STRING },
-                      archetype: { type: Type.STRING, enum: [...ARCHETYPE_LIST] },
-                      desireArchetype: { type: Type.STRING, enum: [...DESIRE_ARCHETYPES] },
-                      npcRole: { type: Type.STRING, enum: [...NPC_ROLES] },
-                      personality: { type: Type.STRING },
-                      huntingStyle: { type: Type.STRING },
-                      weakness: { type: Type.STRING },
-                      visualTraits: { type: Type.STRING },
-                      disposition: { type: Type.STRING, enum: [...DISPOSITION_LIST] },
-                      alertness: { type: Type.INTEGER },
-                      affinity: { type: Type.INTEGER },
-                      lastLine: { type: Type.STRING },
-                    },
-                    required: [
-                      "id",
-                      "name",
-                      "title",
-                      "species",
-                      "archetype",
-                      "desireArchetype",
-                      "npcRole",
-                      "personality",
-                      "huntingStyle",
-                      "weakness",
-                      "visualTraits",
-                      "disposition",
-                      "alertness",
-                      "affinity",
-                      "lastLine",
-                    ],
-                  },
-                },
-                choices: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      label: { type: Type.STRING },
-                      intent: { type: Type.STRING, enum: [...CHOICE_INTENTS] },
-                      riskLabel: { type: Type.STRING },
-                    },
-                    required: ["id", "label", "intent", "riskLabel"],
-                  },
-                },
-              },
-              required: ["floorTitle", "protagonistOpening", "hunters", "choices"],
-            },
-          },
-        })
-      );
+      const schemaHint = `{
+  "floorTitle": "string",
+  "protagonistOpening": "string",
+  "hunters": [
+    {
+      "id": "string",
+      "name": "string",
+      "title": "string",
+      "species": "string",
+      "archetype": "arachne"|"lamia"|"succubus"|"moth"|"alraune"|"slime"|"fungal",
+      "desireArchetype": "Siren"|"Whisperer"|"Enveloper",
+      "npcRole": "Kindly Guide"|"Rival"|"Curious Scholar"|"Lone Survivor"|"Trickster",
+      "personality": "string",
+      "huntingStyle": "string",
+      "weakness": "string",
+      "visualTraits": "string",
+      "disposition": "Stalking"|"Amused"|"Hungry"|"Wary"|"Cornered"|"Charmed",
+      "alertness": number (20-80),
+      "affinity": number (0-30),
+      "lastLine": "string"
+    }
+  ],
+  "choices": [
+    { "id": "string", "label": "string", "intent": "physical"|"analytical"|"social"|"mental", "riskLabel": "string" }
+  ]
+}`;
 
-      const raw = (response.text ?? "{}").trim();
-      const parsed = JSON.parse(raw);
+      const parsed: any = await withRetry(
+        () => callOllamaJson<any>(prompt, schemaHint),
+        1
+      );
 
       if (Array.isArray(parsed.hunters)) {
         parsed.hunters = parsed.hunters
@@ -383,13 +398,6 @@ CONTENT & AGENCY GUIDELINES:
   // Process a turn in The Euphoric Void (Exploration + Seduction Battle)
   app.post("/api/game/turn", async (req, res) => {
     try {
-      if (!process.env.GEMINI_API_KEY) {
-        res.status(500).json({
-          error: "GEMINI_API_KEY is not configured in environment secrets.",
-        });
-        return;
-      }
-
       const SCENE_BACKDROPS = ["bedroom", "corridor", "conservatory", "sanctuary"] as const;
       const LIGHTING_MOODS = [
         "violet_mist",
@@ -543,80 +551,36 @@ MECHANICAL RULES:
    - "haven": -16 to -24 intoxicationDelta, +14 to +20 tetherDelta, +14 to +20 selfhoodDelta, -15 hesitationDelta.
 3. "choices": Provide EXACTLY 4 suggested actions covering all 4 skill intents: physical, analytical, social, mental.`;
 
-      const response = await withRetry(() =>
-        ai.models.generateContent({
-          model: MODEL_NAME,
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: "application/json",
-            responseSchema: {
-              type: Type.OBJECT,
-              properties: {
-                protagonistDmText: { type: Type.STRING },
-                hunterDialogue: { type: Type.STRING },
-                hunterActionSummary: { type: Type.STRING },
-                embracePose: { type: Type.STRING },
-                intimacyContact: { type: Type.STRING, enum: ["none", "soft", "deep"] },
-                skillCheckSummary: { type: Type.STRING },
-                newDisposition: { type: Type.STRING, enum: [...DISPOSITION_LIST] },
-                sceneBackdrop: { type: Type.STRING, enum: [...SCENE_BACKDROPS] },
-                lightingMood: { type: Type.STRING, enum: [...LIGHTING_MOODS] },
-                entityStance: { type: Type.STRING, enum: [...ENTITY_STANCES] },
-                visualEffect: { type: Type.STRING, enum: [...VISUAL_EFFECTS] },
-                sceneCaption: { type: Type.STRING },
-                battleEnded: { type: Type.STRING, enum: [...BATTLE_END_STATES] },
-                intoxicationDelta: { type: Type.INTEGER },
-                tetherDelta: { type: Type.INTEGER },
-                selfhoodDelta: { type: Type.INTEGER },
-                hesitationDelta: { type: Type.INTEGER },
-                alertnessDelta: { type: Type.INTEGER },
-                affinityDelta: { type: Type.INTEGER },
-                stunTurns: { type: Type.INTEGER },
-                choices: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      label: { type: Type.STRING },
-                      intent: { type: Type.STRING, enum: [...CHOICE_INTENTS] },
-                      riskLabel: { type: Type.STRING },
-                    },
-                    required: ["id", "label", "intent", "riskLabel"],
-                  },
-                },
-              },
-              required: [
-                "protagonistDmText",
-                "hunterDialogue",
-                "hunterActionSummary",
-                "embracePose",
-                "intimacyContact",
-                "skillCheckSummary",
-                "newDisposition",
-                "sceneBackdrop",
-                "lightingMood",
-                "entityStance",
-                "visualEffect",
-                "sceneCaption",
-                "battleEnded",
-                "intoxicationDelta",
-                "tetherDelta",
-                "selfhoodDelta",
-                "hesitationDelta",
-                "alertnessDelta",
-                "affinityDelta",
-                "stunTurns",
-                "choices",
-              ],
-            },
-          },
-        })
-      );
+      const turnSchemaHint = `{
+  "protagonistDmText": "string",
+  "hunterDialogue": "string",
+  "hunterActionSummary": "string",
+  "embracePose": "string",
+  "intimacyContact": "none"|"soft"|"deep",
+  "skillCheckSummary": "string",
+  "newDisposition": "Stalking"|"Amused"|"Hungry"|"Wary"|"Cornered"|"Charmed",
+  "sceneBackdrop": "bedroom"|"corridor"|"conservatory"|"sanctuary",
+  "lightingMood": "violet_mist"|"candlelit_rose"|"sanctuary_silver"|"overload_haze",
+  "entityStance": "distant"|"threshold"|"close"|"embrace",
+  "visualEffect": "mist"|"petals"|"embers"|"spores",
+  "sceneCaption": "string",
+  "battleEnded": "none"|"escaped"|"outwitted"|"charmed",
+  "intoxicationDelta": number,
+  "tetherDelta": number,
+  "selfhoodDelta": number,
+  "hesitationDelta": number,
+  "alertnessDelta": number,
+  "affinityDelta": number,
+  "stunTurns": number,
+  "choices": [
+    { "id": "string", "label": "string", "intent": "physical"|"analytical"|"social"|"mental", "riskLabel": "string" }
+  ]
+}`;
 
-      const raw = (response.text ?? "{}").trim();
-      const parsed = JSON.parse(raw);
+      const parsed: any = await withRetry(
+        () => callOllamaJson<any>(prompt, turnSchemaHint),
+        1
+      );
 
       let intoxicationDelta = clamp(Number(parsed.intoxicationDelta ?? 0), -28, 28);
       if (ringEquipped && intoxicationDelta > 0) {
