@@ -432,10 +432,7 @@ CONTENT & AGENCY GUIDELINES:
   ]
 }`;
 
-      const parsed: any = await withRetry(
-        () => callOllamaJson<any>(prompt, schemaHint),
-        1
-      );
+      const parsed: any = await callOllamaJson<any>(prompt, schemaHint);
 
       if (Array.isArray(parsed.hunters)) {
         parsed.hunters = parsed.hunters
@@ -469,101 +466,97 @@ CONTENT & AGENCY GUIDELINES:
       }
 
       res.json(parsed);
-    } catch (err) {
-      const { status, message } = extractErrorMessage(err);
-      if (isQuotaExceeded(status, message)) {
-        const floorNum = Number(req.body?.floor ?? 1);
-        const room = String(req.body?.roomName ?? "Fractured Threshold");
-        const companions = Array.isArray(req.body?.charmedCompanions)
-          ? (req.body.charmedCompanions as Array<{ name?: string }>)
-          : [];
-        const companionEchoLine =
-          companions.length > 0
-            ? ` A lingering trace of warmth left by ${companions[companions.length - 1]?.name ?? "a charmed companion"} hangs gently beside the threshold.`
-            : "";
+    } catch (err: any) {
+      console.warn("AI session init failed or timed out. Falling back to procedural engine:", err?.message || err);
+      const floorNum = Number(req.body?.floor ?? 1);
+      const room = String(req.body?.roomName ?? "Fractured Threshold");
+      const companions = Array.isArray(req.body?.charmedCompanions)
+        ? (req.body.charmedCompanions as Array<{ name?: string }>)
+        : [];
+      const companionEchoLine =
+        companions.length > 0
+          ? ` A lingering trace of warmth left by ${companions[companions.length - 1]?.name ?? "a charmed companion"} hangs gently beside the threshold.`
+          : "";
 
-        const roster = [
-          {
-            id: `hunter-f${floorNum}-0-${Date.now()}`,
-            name: floorNum === 1 ? "Seraphina" : floorNum === 2 ? "Vespera" : "Sylvara",
-            title:
-              floorNum === 1
-                ? "Crimson Bloom Sovereign"
-                : floorNum === 2
-                ? "Velvet Canopy Weaver"
-                : "Obsidian Throne Keeper",
-            species:
-              floorNum === 1
-                ? "Crimson Alraune"
-                : floorNum === 2
-                ? "Arachne Weaver"
-                : "Obsidian Lamia",
-            archetype:
-              floorNum === 1 ? "alraune" : floorNum === 2 ? "arachne" : "lamia",
-            desireArchetype: floorNum === 1 ? "Siren" : "Enveloper",
-            npcRole: floorNum === 1 ? "Kindly Guide" : "Rival",
-            personality: "Velvet-voiced, intensely attentive, and protective of anyone who earns her grace",
-            huntingStyle: "Draws travelers closer through crimson petal-scent and enveloping velvet embraces",
-            weakness: "Sharp analytical reading of her rhythmic cadence and honest, unguarded banter",
-            visualTraits: "Flowing rose-crimson hair framed by thorny vines and velvet petals",
-            disposition: "Amused",
-            alertness: 48,
-            affinity: 10,
-            lastLine: "Easy now, wanderer. Let the petals catch your breath before you hurry away.",
-          },
-          {
-            id: `hunter-f${floorNum}-1-${Date.now()}`,
-            name: floorNum === 1 ? "Caelia" : floorNum === 2 ? "Nyxia" : "Undine",
-            title:
-              floorNum === 1
-                ? "Lantern Spore Dryad"
-                : floorNum === 2
-                ? "Moon-Wing Whisperer"
-                : "Crystal Tendril Spirit",
-            species:
-              floorNum === 1
-                ? "Twilight Mycelial Dryad"
-                : floorNum === 2
-                ? "Luminous Mothkin"
-                : "Crystal Slime Spirit",
-            archetype:
-              floorNum === 1 ? "fungal" : floorNum === 2 ? "moth" : "slime",
-            desireArchetype: "Whisperer",
-            npcRole: "Trickster",
-            personality: "Softly teasing, curious, fond of close quiet whispers and tender embraces",
-            huntingStyle: "Wraps intruders in bioluminescent mist and gentle cradling holds",
-            weakness: "Decisive physical agility and calm mental grounding on his Anchor cord",
-            visualTraits: "Pale bioluminescent cloak glowing softly against candlelit stone",
-            disposition: "Stalking",
-            alertness: 46,
-            affinity: 8,
-            lastLine: "You stepped right past my lantern spores—care to stay a heartbeat longer?",
-          },
-        ];
-
-        res.json({
-          floorTitle:
+      const roster = [
+        {
+          id: `hunter-f${floorNum}-0-${Date.now()}`,
+          name: floorNum === 1 ? "Seraphina" : floorNum === 2 ? "Vespera" : "Sylvara",
+          title:
             floorNum === 1
-              ? "Velvet Conservatory Wing"
+              ? "Crimson Bloom Sovereign"
               : floorNum === 2
-              ? "Candlelit Boudoir Gallery"
-              : floorNum === 3
-              ? "Heart of the Euphoric Void"
-              : floorNum === 4
-              ? "Obsidian Canopy Cloister"
-              : "Abyssal Sanctuary Core",
-          protagonistOpening: `Warm rose-musk and cool violet haze curl around ${room}. My slate-gray hoodie feels thin against the velvet air, and my fingers brush the woven cord bracelet at my wrist while draped boudoir doors and mossy arches wait down the corridor.${companionEchoLine} Which way should I move first?`,
-          hunters: roster,
-          choices: [
-            { id: "c1", label: "Slip cleanly through the nearest doorway", intent: "physical", riskLabel: "Physical" },
-            { id: "c2", label: "Read the candle soot and petal trails", intent: "analytical", riskLabel: "Analytical" },
-            { id: "c3", label: "Call softly into the rose-lit hall", intent: "social", riskLabel: "Social" },
-            { id: "c4", label: "Steady your pulse around the Anchor cord", intent: "mental", riskLabel: "Mental" },
-          ],
-        });
-        return;
-      }
-      res.status(status).json({ error: message });
+              ? "Velvet Canopy Weaver"
+              : "Obsidian Throne Keeper",
+          species:
+            floorNum === 1
+              ? "Crimson Alraune"
+              : floorNum === 2
+              ? "Arachne Weaver"
+              : "Obsidian Lamia",
+          archetype:
+            floorNum === 1 ? "alraune" : floorNum === 2 ? "arachne" : "lamia",
+          desireArchetype: floorNum === 1 ? "Siren" : "Enveloper",
+          npcRole: floorNum === 1 ? "Kindly Guide" : "Rival",
+          personality: "Velvet-voiced, intensely attentive, and protective of anyone who earns her grace",
+          huntingStyle: "Draws travelers closer through crimson petal-scent and enveloping velvet embraces",
+          weakness: "Sharp analytical reading of her rhythmic cadence and honest, unguarded banter",
+          visualTraits: "Flowing rose-crimson hair framed by thorny vines and velvet petals",
+          disposition: "Amused",
+          alertness: 48,
+          affinity: 10,
+          lastLine: "Easy now, wanderer. Let the petals catch your breath before you hurry away.",
+        },
+        {
+          id: `hunter-f${floorNum}-1-${Date.now()}`,
+          name: floorNum === 1 ? "Caelia" : floorNum === 2 ? "Nyxia" : "Undine",
+          title:
+            floorNum === 1
+              ? "Lantern Spore Dryad"
+              : floorNum === 2
+              ? "Moon-Wing Whisperer"
+              : "Crystal Tendril Spirit",
+          species:
+            floorNum === 1
+              ? "Twilight Mycelial Dryad"
+              : floorNum === 2
+              ? "Luminous Mothkin"
+              : "Crystal Slime Spirit",
+          archetype:
+            floorNum === 1 ? "fungal" : floorNum === 2 ? "moth" : "slime",
+          desireArchetype: "Whisperer",
+          npcRole: "Trickster",
+          personality: "Softly teasing, curious, fond of close quiet whispers and tender embraces",
+          huntingStyle: "Wraps intruders in bioluminescent mist and gentle cradling holds",
+          weakness: "Decisive physical agility and calm mental grounding on his Anchor cord",
+          visualTraits: "Pale bioluminescent cloak glowing softly against candlelit stone",
+          disposition: "Stalking",
+          alertness: 46,
+          affinity: 8,
+          lastLine: "You stepped right past my lantern spores—care to stay a heartbeat longer?",
+        },
+      ];
+
+      res.json({
+        floorTitle:
+          floorNum === 1
+            ? "Velvet Conservatory Wing"
+            : floorNum === 2
+            ? "Candlelit Boudoir Gallery"
+            : floorNum === 3
+            ? "Heart of the Euphoric Void"
+            : floorNum === 4
+            ? "Obsidian Canopy Cloister"
+            : "Abyssal Sanctuary Core",
+        protagonistOpening: `Warm rose-musk and cool violet haze curl around ${room}. My slate-gray hoodie feels thin against the velvet air, and my fingers brush the woven cord bracelet at my wrist while draped boudoir doors and mossy arches wait down the corridor.${companionEchoLine} Which way should I move first?`,
+        hunters: roster,
+        choices: [
+          { id: "c1", label: "Slip cleanly through the nearest doorway", intent: "physical", riskLabel: "Physical" },
+          { id: "c2", label: "Read the candle soot and petal trails", intent: "analytical", riskLabel: "Analytical" },
+          { id: "c3", label: "Call softly into the rose-lit hall", intent: "social", riskLabel: "Social" },
+          { id: "c4", label: "Steady your pulse around the Anchor cord", intent: "mental", riskLabel: "Mental" },
+        ],
+      });
     }
   });
 
@@ -749,10 +742,7 @@ MECHANICAL RULES:
   ]
 }`;
 
-      const parsed: any = await withRetry(
-        () => callOllamaJson<any>(prompt, turnSchemaHint),
-        1
-      );
+      const parsed: any = await callOllamaJson<any>(prompt, turnSchemaHint);
 
       let intoxicationDelta = clamp(Number(parsed.intoxicationDelta ?? 0), -28, 28);
       if (ringEquipped && intoxicationDelta > 0) {
