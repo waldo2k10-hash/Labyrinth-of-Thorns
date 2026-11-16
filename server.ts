@@ -1,22 +1,50 @@
 import "dotenv/config";
 import express from "express";
+import fetch from "node-fetch";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = 3000;
 
-const ai = new GoogleGenAI({
-  apiKey: process.env.GEMINI_API_KEY,
-  httpOptions: {
-    headers: {
-      "User-Agent": "aistudio-build",
-    },
-  },
-});
+// OLLAMA CONFIGURATION (replacing GoogleGenAI)
+// const ai = new GoogleGenAI({...});  // REMOVED
 
-const MODEL_NAME = "gemini-4-hydrogen";
+// Configuration from environment
+const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434/api/chat";
+const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "hf.co/ReadyArt/Omega-Arsenal-12B-GGUF";
+
+// AI Response Generator using local Ollama instance
+async function generateAIResponse(prompt: string, context?: any): Promise<string> {
+  try {
+    const response = await fetch(OLLAMA_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: OLLAMA_MODEL,
+        messages: [
+          {
+            role: "system",
+            content:
+              "You are the Narrator of The Euphoric Void. Tone: Psychological, liminal, and oppressive. Focus on the psychological stats: Tether, Ego, and Intoxication.",
+          },
+          { role: "user", content: prompt },
+        ],
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Ollama API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    return data.message.content;
+  } catch (error) {
+    console.error("Ollama Connection Error:", error);
+    return "The Void remains silent... (Check if Ollama is running)";
+  }
+}
 
 const ARCHETYPE_LIST = [
   "arachne",
