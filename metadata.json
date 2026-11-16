@@ -1,0 +1,6 @@
+{
+  "name": "Labyrinth of Thorns",
+  "description": "A real-time AI dungeon crawler where a protagonist guides you like a Dungeon Master through a dark labyrinth hunted by dynamic monster girl NPCs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

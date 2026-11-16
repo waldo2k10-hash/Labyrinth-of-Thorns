@@ -1,0 +1,44 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: "Cinzel", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    background-color: #0b0c10;
+    color: #f2efe9;
+    font-family: var(--font-sans);
+  }
+}
+
+/* Custom subtle dark scrollbar for narrative chronicle */
+.labyrinth-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+.labyrinth-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.labyrinth-scroll::-webkit-scrollbar-thumb {
+  background: rgba(242, 239, 233, 0.14);
+  border-radius: 3px;
+}
+.labyrinth-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(242, 239, 233, 0.25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
