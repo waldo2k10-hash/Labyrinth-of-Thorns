@@ -13,16 +13,15 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "hf.co/ReadyArt/Omega-Arsenal-1
 // COMFYUI CONFIGURATION
 const COMFYUI_URL = process.env.COMFYUI_URL || "http://127.0.0.1:8188";
 
-// Helper to call Ollama with guaranteed JSON parsing and a timeout
-async function callOllamaJson<T>(prompt: string, schemaHint?: string): Promise<T> {
+// --- UNIFIED AI BRAIN START ---
+async function askTheVoid<T>(prompt: string, systemContext: string, playerStats?: any): Promise<T> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 25000);
+  const timeoutId = setTimeout(() => controller.abort(), 40000); 
 
   try {
-    const systemPrompt = `You are the Game Master & Dynamic Monster-Girl Engine for "The Euphoric Void" (Gothic Romance & Seduction Battle RPG).
-You must output valid JSON only. Do not include markdown codeblocks or thinking tags.${
-      schemaHint ? ` Ensure your JSON adheres to this schema:\n${schemaHint}` : ""
-    }`;
+    const statsStr = playerStats
+      ? `\nPlayer State: Tether ${playerStats.tether}/100, Ego ${playerStats.ego}/100, Intoxication ${playerStats.intoxication}/100.`
+      : "";
 
     const response = await fetch(OLLAMA_URL, {
       method: "POST",
@@ -30,7 +29,7 @@ You must output valid JSON only. Do not include markdown codeblocks or thinking 
       body: JSON.stringify({
         model: OLLAMA_MODEL,
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: systemContext + statsStr },
           { role: "user", content: prompt },
         ],
         format: "json",
@@ -39,69 +38,27 @@ You must output valid JSON only. Do not include markdown codeblocks or thinking 
       signal: controller.signal,
     });
 
-    if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status}`);
-    }
+    if (!response.ok) throw new Error(`Ollama API error: ${response.status}`);
 
     const data = (await response.json()) as { message?: { content?: string } };
     let text = (data.message?.content ?? "").trim();
 
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    // Robust JSON Extraction: ignores markdown blocks or conversational filler
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      text = jsonMatch[1].trim();
-    } else {
-      const start = text.indexOf("{");
-      const end = text.lastIndexOf("}");
-      if (start !== -1 && end !== -1 && end > start) {
-        text = text.substring(start, end + 1);
-      }
+      text = jsonMatch[0];
     }
 
     return JSON.parse(text) as T;
-  } finally {
-    clearTimeout(timeoutId);
-  }
-}
-
-// AI Response Generator for status check
-async function generateAIResponse(prompt: string): Promise<string> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 12000);
-
-  try {
-    const response = await fetch(OLLAMA_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: OLLAMA_MODEL,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You are the Narrator of The Euphoric Void. Tone: Psychological, liminal, and oppressive. Keep answers to 1-2 evocative sentences.",
-          },
-          { role: "user", content: prompt },
-        ],
-        stream: false,
-      }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status}`);
-    }
-
-    const data = (await response.json()) as { message?: { content?: string } };
-    let text = (data.message?.content ?? "").trim();
-    text = text.replace(/<\|channel>[\s\S]*?<channel\|>/g, "").trim();
-    return text || "The Void listens in silence.";
   } catch (error) {
-    console.error("Ollama Connection Error:", error);
-    return "The Void whispers from within the shadows...";
+    console.error("Void Communication Error:", error);
+    throw error; 
   } finally {
     clearTimeout(timeoutId);
   }
 }
+// --- UNIFIED AI BRAIN END ---
+
 
 // Generate an image via the local ComfyUI API
 async function generateComfyImage(
@@ -278,6 +235,52 @@ async function startServer() {
     }
   });
 
+  // Director Pipeline Interaction Route with Quick-Fix Safety Check
+  app.post("/api/interact", async (req, res) => {
+    const { userPrompt, playerStats } = req.body;
+    try {
+      const systemPrompt = `You are the Director of 'The Euphoric Void'. You MUST respond ONLY in JSON. 
+Structure: { "narration": "...", "visual_prompt": "...", "psych_impact": { "tether": 0, "ego": 0, "intoxication": 0 } }`;
+
+      const directorData = await askTheVoid<any>(userPrompt || "Continue exploration", systemPrompt, playerStats);
+
+      if (directorData?.visual_prompt) {
+          generateComfyImage(directorData.visual_prompt).catch(err => console.error("ComfyUI Error:", err));
+      }
+
+      res.json({
+          narration: directorData?.narration || "The Void shifts silently.",
+          impact: directorData?.psych_impact || { tether: 0, ego: 0, intoxication: 0 },
+          imageStatus: "manifesting",
+      });
+    } catch (e) {
+      console.error("Director Pipeline Error:", e);
+      res.status(500).json({ error: "Director failed to format the void." });
+    }
+  });
+
+  // Synchronous Manifestation Loop Route
+  app.post('/api/void/manifest', async (req, res) => {
+      const { userPrompt, playerStats } = req.body;
+
+      try {
+          const systemPrompt = `You are the Director of 'The Euphoric Void'. You MUST respond ONLY in JSON. 
+Structure: { "narration": "...", "visual_prompt": "...", "impact": { "tether": 0, "ego": 0, "intoxication": 0 } }`;
+
+          const directorPlan = await askTheVoid<any>(userPrompt, systemPrompt, playerStats);
+          const imageData = await generateComfyImage(directorPlan.visual_prompt);
+
+          res.json({
+              narration: directorPlan.narration,
+              image: imageData?.url || '',
+              impact: directorPlan.impact
+          });
+      } catch (error) {
+          console.error("Manifestation error:", error);
+          res.status(500).json({ error: "The manifestation failed." });
+      }
+  });
+
   // ComfyUI Status Route
   app.get("/api/comfy/status", async (_req, res) => {
     try {
@@ -432,7 +435,13 @@ CONTENT & AGENCY GUIDELINES:
   ]
 }`;
 
-      const parsed: any = await callOllamaJson<any>(prompt, schemaHint);
+      let parsed: any;
+      try {
+          parsed = await askTheVoid<any>(prompt, schemaHint, {});
+      } catch (err) {
+          console.warn("AI session init failed, triggering procedural fallback:", err);
+          throw err;
+      }
 
       if (Array.isArray(parsed.hunters)) {
         parsed.hunters = parsed.hunters
@@ -742,7 +751,7 @@ MECHANICAL RULES:
   ]
 }`;
 
-      const parsed: any = await callOllamaJson<any>(prompt, turnSchemaHint);
+      const parsed: any = await askTheVoid<any>(prompt, turnSchemaHint, { tether, ego: selfhood, intoxication });
 
       let intoxicationDelta = clamp(Number(parsed.intoxicationDelta ?? 0), -28, 28);
       if (ringEquipped && intoxicationDelta > 0) {
