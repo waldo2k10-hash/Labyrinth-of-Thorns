@@ -13,64 +13,30 @@ const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "hf.co/ReadyArt/Omega-Arsenal-1
 // COMFYUI CONFIGURATION
 const COMFYUI_URL = process.env.COMFYUI_URL || "http://127.0.0.1:8188";
 
-// Synchronous Director getOllamaResponse function
-async function getOllamaResponse(userPrompt: string, playerStats: any) {
-    try {
-        // FORCED JSON STRUCTURE
-        const systemContext = `You are the Director of 'The Euphoric Void'. 
-        You MUST respond ONLY in JSON format. 
-        Structure: { "narration": "...", "visual_prompt": "...", "impact": { "tether": 0, "ego": 0, "intoxication": 0 } }
-        Context: Player is at Tether ${playerStats?.tether ?? 100}, Ego ${playerStats?.ego ?? 100}, Intoxication ${playerStats?.intoxication ?? 0}.
-        Tone: Psychological, oppressive, adult-themed.`;
+type VoidPlayerStats = {
+  tether?: number;
+  ego?: number;
+  intoxication?: number;
+};
 
-        const response = await fetch(OLLAMA_URL, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: OLLAMA_MODEL,
-                messages: [
-                    { role: 'system', content: systemContext },
-                    { role: 'user', content: userPrompt }
-                ],
-                stream: false,
-                format: "json" // Tells Ollama to force JSON mode
-            })
-        });
-
-        const data = await response.json() as any;
-        let text = data?.message?.content ?? "{}";
-        return JSON.parse(text); 
-    } catch (error) {
-        console.error("Ollama Director Error:", error);
-        return { narration: "The void is silent...", visual_prompt: "dark void", impact: { tether: 0, ego: 0, intoxication: 0 } };
-    }
-}
-
-// Helper to call Ollama with guaranteed JSON parsing and a timeout
-async function callOllamaJson<T>(
+// --- UNIFIED AI BRAIN START ---
+async function askTheVoid<T>(
   prompt: string,
-  schemaHint?: string,
-  playerStats?: { tether: number; ego: number; intoxication: number }
+  systemContext: string,
+  playerStats?: VoidPlayerStats
 ): Promise<T> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 25000);
+  const timeoutId = setTimeout(() => controller.abort(), 40000);
 
   try {
-    const statsStr = playerStats
-      ? `Current Player State: Tether ${playerStats.tether}/100, Ego ${playerStats.ego}/100, Intoxication ${playerStats.intoxication}/100.`
+    const hasPlayerStats =
+      playerStats &&
+      (typeof playerStats.tether === "number" ||
+        typeof playerStats.ego === "number" ||
+        typeof playerStats.intoxication === "number");
+    const statsStr = hasPlayerStats
+      ? `\nPlayer State: Tether ${playerStats.tether ?? 100}/100, Ego ${playerStats.ego ?? 100}/100, Intoxication ${playerStats.intoxication ?? 0}/100.`
       : "";
-    const systemPrompt = `You are the Director of 'The Euphoric Void'. 
-You MUST respond ONLY in JSON format. Do not include conversational filler.
-JSON Structure:
-{
-  "narration": "The atmospheric description of the scene...",
-  "visual_prompt": "A detailed Stable Diffusion prompt for this scene...",
-  "psych_impact": { "tether": 0, "ego": 0, "intoxication": 0 }
-}
-${statsStr}
-Tone: Liminal, psychological, and oppressive.${
-      schemaHint ? ` Ensure your JSON adheres to this schema:\n${schemaHint}` : ""
-    }`;
 
     const response = await fetch(OLLAMA_URL, {
       method: "POST",
@@ -78,7 +44,7 @@ Tone: Liminal, psychological, and oppressive.${
       body: JSON.stringify({
         model: OLLAMA_MODEL,
         messages: [
-          { role: "system", content: systemPrompt },
+          { role: "system", content: systemContext + statsStr },
           { role: "user", content: prompt },
         ],
         format: "json",
@@ -94,22 +60,20 @@ Tone: Liminal, psychological, and oppressive.${
     const data = (await response.json()) as { message?: { content?: string } };
     let text = (data.message?.content ?? "").trim();
 
-    const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
-      text = jsonMatch[1].trim();
-    } else {
-      const start = text.indexOf("{");
-      const end = text.lastIndexOf("}");
-      if (start !== -1 && end !== -1 && end > start) {
-        text = text.substring(start, end + 1);
-      }
+      text = jsonMatch[0];
     }
 
     return JSON.parse(text) as T;
+  } catch (error) {
+    console.error("Void Communication Error:", error);
+    throw error;
   } finally {
     clearTimeout(timeoutId);
   }
 }
+// --- UNIFIED AI BRAIN END ---
 
 // AI Response Generator for status check
 async function generateAIResponse(prompt: string): Promise<string> {
@@ -330,19 +294,19 @@ async function startServer() {
   app.post("/api/interact", async (req, res) => {
     const { userPrompt, playerStats } = req.body;
     try {
-      const directorData = await callOllamaJson<any>(
+      const systemPrompt = `You are the Director of 'The Euphoric Void'. You MUST respond ONLY in JSON.
+Structure: { "narration": "...", "visual_prompt": "...", "psych_impact": { "tether": 0, "ego": 0, "intoxication": 0 } }`;
+      const directorData = await askTheVoid<any>(
         userPrompt || "Continue exploration",
-        undefined,
+        systemPrompt,
         playerStats
       );
 
       // Trigger ComfyUI in the background
       if (directorData?.visual_prompt) {
-        generateComfyImage(directorData.visual_prompt).then((imageUrl) => {
-          console.log("Image Manifested:", imageUrl);
-        }).catch((err) => {
-          console.error("ComfyUI Background Generation Error:", err);
-        });
+        generateComfyImage(directorData.visual_prompt).catch((err) =>
+          console.error("ComfyUI Background Generation Error:", err)
+        );
       }
 
       res.json({
@@ -361,18 +325,15 @@ async function startServer() {
       const { userPrompt, playerStats } = req.body;
 
       try {
-          // 1. Get the "Director's" plan (Narration + Image Prompt)
-          const directorPlan = await getOllamaResponse(userPrompt, playerStats);
-          
-          // 2. Use the visual_prompt to generate the image in ComfyUI
+          const systemPrompt = `You are the Director of 'The Euphoric Void'. You MUST respond ONLY in JSON.
+Structure: { "narration": "...", "visual_prompt": "...", "impact": { "tether": 0, "ego": 0, "intoxication": 0 } }`;
+          const directorPlan = await askTheVoid<any>(userPrompt || "Continue exploration", systemPrompt, playerStats);
           const imageData = await generateComfyImage(directorPlan.visual_prompt);
-          const imageUrl = imageData?.url || '';
 
-          // 3. Send everything back to the frontend
           res.json({
               narration: directorPlan.narration,
-              image: imageUrl,
-              impact: directorPlan.impact
+              image: imageData?.url || '',
+              impact: directorPlan.impact || { tether: 0, ego: 0, intoxication: 0 }
           });
       } catch (error) {
           console.error("Manifestation error:", error);
@@ -534,7 +495,13 @@ CONTENT & AGENCY GUIDELINES:
   ]
 }`;
 
-      const parsed: any = await callOllamaJson<any>(prompt, schemaHint);
+      let parsed: any;
+      try {
+        parsed = await askTheVoid<any>(prompt, schemaHint, {});
+      } catch (err) {
+        console.warn("AI session init failed, triggering procedural fallback:", err);
+        throw err;
+      }
 
       if (Array.isArray(parsed.hunters)) {
         parsed.hunters = parsed.hunters
@@ -844,7 +811,11 @@ MECHANICAL RULES:
   ]
 }`;
 
-      const parsed: any = await callOllamaJson<any>(prompt, turnSchemaHint);
+      const parsed: any = await askTheVoid<any>(prompt, turnSchemaHint, {
+        tether,
+        ego: selfhood,
+        intoxication,
+      });
 
       let intoxicationDelta = clamp(Number(parsed.intoxicationDelta ?? 0), -28, 28);
       if (ringEquipped && intoxicationDelta > 0) {
