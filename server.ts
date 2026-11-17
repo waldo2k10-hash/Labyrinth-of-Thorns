@@ -447,7 +447,7 @@ Structure: { "narration": "...", "visual_prompt": "...", "impact": { "tether": 0
               .join("; ")}. Mention a faint warm trace or protective scent left by this companion in protagonistOpening.`
           : "";
 
-      const prompt = `You are the Game Master & Dynamic Monster-Girl Engine for "The Euphoric Void" (PG-13 Gothic Romance & Seduction Battle RPG).
+      const prompt = `You are the Game Master & Dynamic Monster-Girl Engine for "The Euphoric Void" (Mature Adventure blending Dark Fantasy, Science Fiction, Mystery, and Supernatural Exploration focusing on Eroticized Assimilation).
 Session Seed: ${sessionSeed}
 Floor: ${floor} of ${maxFloors}
 Protagonist: ${protagonistName} — a lean, sharp-eyed 19-year-old traveler in a faded slate-gray hoodie, dark navy jeans, worn hiking boots, and a simple woven cord bracelet (his Anchor). He has amnesia and stands out in cool muted contrast against velvet boudoirs, rose-lit sanctuaries, and Dream District ruins.
@@ -455,8 +455,9 @@ Starting Zone: ${roomName}
 Avoid reusing names: ${JSON.stringify(existingHunterNames)}${companionNote}
 
 CONTENT & AGENCY GUIDELINES:
-- PG-13 ROMANTIC & SEDUCTIVE TONE (NON-EXPLICIT): Lush gothic tension, sensual proximity, velvet embraces, tender or daring kisses (Full-Body Kiss, Pillow Kiss, Throne Kiss, Winged Kiss, Petal Kiss, Liquid Kiss, Forehead Kiss, Velvet Recline Kiss), and protective monster-specific features (silk gossamer, vines, petals, wings, iridescent tails, translucent slime tendrils, bioluminescent spore cloaks). Keep all descriptions tasteful, poetic, and strictly non-explicit.
-- PLAYER AGENCY PROTOCOL: ${protagonistName} acts as a tactile sensory narrator reporting physical sensations, rose-scented air, Intoxication haze, Tether warmth, and environmental clues directly to the player—NEVER narrating his internal choices or making decisions for the player.
+- EROTICIZED ASSIMILATION & ENERGY DRAIN: Some hostile or supernatural NPCs can siphon the protagonist's stored power from a distance. Draining is a supernatural attack framed as a predatory act of allure, sensory overwhelm, or parasitic/eroticized siphoning of essence.
+- SPECIES & DESIGN: Use varied, non-human designs when they fit the setting: winged scouts, serpentine guardians, foxlike guides, clockwork surveyors, fungal collectives, crystal beings, and shifting geometric entities. Describe features to emphasize their power, presence, and supernatural allure.
+- PLAYER AGENCY PROTOCOL: Do not remove player agency through forced narrative surrender; use the Psyche mechanics (Intoxication/Tether) to simulate the struggle against allure. ${protagonistName} acts as a tactile sensory narrator reporting physical sensations, Intoxication haze, Tether warmth, and environmental clues directly to the player—NEVER narrating his internal choices or making decisions for the player.
 - Generate 2 UNIQUE monster girl residents/hunters roaming this sector. Each must have:
   * archetype: one of "arachne", "lamia", "succubus", "moth", "alraune", "slime", "fungal"
   * desireArchetype: one of "Siren" (vocally disarming/persuasive), "Whisperer" (ambient mist/sensory lure), or "Enveloper" (physical cocoon/coils/wing embrace)
@@ -743,10 +744,11 @@ CONTENT & AGENCY GUIDELINES:
 - If actionIntent === "examine": ${protagonistName} inspects "${doorLabel}" or "${roomName}" (style: ${tileBackdrop}). Vividly narrate what lies inside based on tileEvent ("key": Mortal Sigil Key resting on velvet/stone; "memory": ${protagonistName} recovers a vivid Memory Shard from his past; "haven": serene silver basin sanctuary; "cache": useful survival supplies; "hazardous": thick clinging spore mist; "unsettling": heavy rose-violet perfume fog; "empty_room": atmospheric ${tileBackdrop} room details like velvet canopy beds, vanity mirrors, or moonlight).
 - Provide 4 exploration choices ([Physical], [Analytical], [Social], [Mental]).`;
 
-      const prompt = `You are the live Game Master & Dynamic Monster-Girl Engine for "The Euphoric Void" (PG-13 Gothic Romance & Seduction Battle RPG).
+      const prompt = `You are the live Game Master & Dynamic Monster-Girl Engine for "The Euphoric Void" (Mature Adventure blending Dark Fantasy, Science Fiction, Mystery, and Supernatural Exploration / Eroticized Assimilation RPG).
 STRICT RULES:
-- PG-13 NON-EXPLICIT BOUNDARY: Keep all romance, seduction, velvet boudoir touches, embraces, and kisses deeply atmospheric, emotional, and tasteful—never anatomically explicit.
-- PLAYER AGENCY PROTOCOL: ${protagonistName} speaks directly to the player as a GM partner—reporting external sensations (warm perfume, velvet silk, heart-rate spikes, Intoxication mist, Tether pull) and physical limits if a Dissolution threshold triggers. NEVER narrate ${protagonistName}'s internal choices for him.
+- PROSE & NARRATION STYLE ("HIGH-SEDUCTION/SENSORY"): Use rich, immersive prose focusing on physical manifestations of tension (racing hearts, flushed skin, trembling), predatory grace, and overwhelming sensory details (scent, heat, tactile pressure). Describe the NPC's allure as a physical force—a weight, a scent, or a heat—that creates the feeling of inevitable surrender.
+- THE "INTERNAL WALL" MANDATE: While prose is suggestive and explicit about external stimuli and involuntary somatic reactions (e.g., "your breath hitches," "your skin flushes," "pulse thrums"), the GM must NEVER narrate the protagonist's internal emotional state, mental consent, or internal surrender.
+- PLAYER AGENCY PROTOCOL: Do not remove player agency through forced narrative surrender; use the Psyche mechanics (Intoxication/Tether) to simulate the struggle against allure. ${protagonistName} speaks directly to the player as a GM partner—reporting external sensations and physical limits.
 - CONCISE NARRATION: Max 2 short paragraphs in "protagonistDmText".
 
 ${modeInstructions}
@@ -771,7 +773,7 @@ REAL-TIME VISUAL STAGE DIRECTORS:
 - "lightingMood": "overload_haze" if Intoxication >= 88; "candlelit_rose" for bedrooms/seduction battles/kisses; "sanctuary_silver" for shrines/havens/anchor focus; otherwise "violet_mist".
 - "entityStance": if NOT in Seduction Battle, ALWAYS "distant"; if in battle, "embrace" for kisses/close holds, "close" for flirting/circling near, otherwise "threshold".
 - "visualEffect": "petals" (rose/alraune/boudoir/kisses), "embers" (warm candlelit/succubus), "spores" (conservatory/moth/fungal/hazardous), or "mist" (corridors/sanctuary).
-- "sceneCaption": 1 concise atmospheric sentence describing the scene right now (PG-13, no numbers).
+- "sceneCaption": 1 concise atmospheric sentence describing the scene right now (Atmospheric, no numbers).
 
 MECHANICAL RULES:
 1. Dissolution Thresholds:
@@ -798,15 +800,21 @@ MECHANICAL RULES:
   "visualEffect": "mist"|"petals"|"embers"|"spores",
   "sceneCaption": "string",
   "battleEnded": "none"|"escaped"|"outwitted"|"charmed",
-  "intoxicationDelta": number,
-  "tetherDelta": number,
-  "selfhoodDelta": number,
-  "hesitationDelta": number,
-  "alertnessDelta": number,
-  "affinityDelta": number,
-  "stunTurns": number,
+  "state_updates": {
+    "intoxicationDelta": number,
+    "tetherDelta": number,
+    "selfhoodDelta": number
+  },
+  "mechanics": {
+    "skill_check": { "skill": "string", "difficulty": number },
+    "absorption": "none|minor|major",
+    "automatic_failure": boolean
+  },
+  "visuals": {
+    "generate_image": "string"
+  },
   "choices": [
-    { "id": "string", "label": "string", "intent": "physical"|"analytical"|"social"|"mental", "riskLabel": "string" }
+    { "id": number, "text": "string", "archetype": "Physical"|"Analytical"|"Social"|"Mental" }
   ]
 }`;
 
@@ -816,7 +824,8 @@ MECHANICAL RULES:
         intoxication,
       });
 
-      let intoxicationDelta = clamp(Number(parsed.intoxicationDelta ?? 0), -28, 28);
+      const rawIntoxDelta = Number(parsed.state_updates?.intoxicationDelta ?? parsed.intoxicationDelta ?? 0);
+      let intoxicationDelta = clamp(rawIntoxDelta, -28, 28);
       if (ringEquipped && intoxicationDelta > 0) {
         intoxicationDelta = Math.max(1, Math.round(intoxicationDelta * 0.5));
       }
@@ -851,7 +860,11 @@ MECHANICAL RULES:
           (parsed.intimacyContact === "soft" || parsed.intimacyContact === "deep")
             ? parsed.intimacyContact
             : "none",
-        skillCheckSummary: String(parsed.skillCheckSummary || "Analytical · Checked"),
+        skillCheckSummary: String(
+          parsed.mechanics?.skill_check?.skill
+            ? `${parsed.mechanics.skill_check.skill} · Checked (DC ${parsed.mechanics.skill_check.difficulty ?? 10})`
+            : parsed.skillCheckSummary || "Analytical · Checked"
+        ),
         newDisposition: DISPOSITION_LIST.includes(parsed.newDisposition)
           ? parsed.newDisposition
           : activeHunter?.disposition ?? "Stalking",
@@ -876,7 +889,8 @@ MECHANICAL RULES:
           ? parsed.visualEffect
           : "mist",
         sceneCaption: String(
-          parsed.sceneCaption ||
+          parsed.visuals?.generate_image ||
+            parsed.sceneCaption ||
             "Warm candlelight and violet mist curl around silk drapes and weathered stone arches."
         ),
         battleEnded:
@@ -884,23 +898,39 @@ MECHANICAL RULES:
           tileEvent !== "ambush_start" &&
           BATTLE_END_STATES.includes(parsed.battleEnded)
             ? parsed.battleEnded
+            : parsed.mechanics?.automatic_failure
+            ? "none"
             : "none",
         intoxicationDelta,
-        tetherDelta: clamp(Number(parsed.tetherDelta ?? 0), -26, 24),
-        selfhoodDelta: clamp(Number(parsed.selfhoodDelta ?? 0), -26, 24),
+        tetherDelta: clamp(Number(parsed.state_updates?.tetherDelta ?? parsed.tetherDelta ?? 0), -26, 24),
+        selfhoodDelta: clamp(Number(parsed.state_updates?.selfhoodDelta ?? parsed.selfhoodDelta ?? 0), -26, 24),
         hesitationDelta: clamp(Number(parsed.hesitationDelta ?? 0), -20, 20),
         alertnessDelta: clamp(Number(parsed.alertnessDelta ?? 4), -30, 25),
         affinityDelta: clamp(Number(parsed.affinityDelta ?? 0), -20, 34),
         stunTurns: clamp(Number(parsed.stunTurns ?? 0), 0, 3),
-        choices:
-          Array.isArray(parsed.choices) && parsed.choices.length >= 4
-            ? parsed.choices.slice(0, 4)
-            : [
-                { id: "c1", label: "Slip past the velvet drape", intent: "physical", riskLabel: "Physical" },
-                { id: "c2", label: "Read the mist's cadence", intent: "analytical", riskLabel: "Analytical" },
-                { id: "c3", label: "Meet her gaze with warm teasing", intent: "social", riskLabel: "Social" },
-                { id: "c4", label: "Grip your woven cord Anchor", intent: "mental", riskLabel: "Mental" },
-              ],
+        choices: Array.isArray(parsed.choices) && parsed.choices.length >= 4
+          ? parsed.choices.slice(0, 4).map((c: any, i: number) => {
+              const arch = String(c.archetype || c.riskLabel || c.intent || "physical").toLowerCase();
+              const intentMap: Record<string, string> = {
+                physical: "physical",
+                analytical: "analytical",
+                social: "social",
+                mental: "mental",
+              };
+              const mappedIntent = intentMap[arch] || (i === 0 ? "physical" : i === 1 ? "analytical" : i === 2 ? "social" : "mental");
+              return {
+                id: String(c.id ?? `c${i + 1}`),
+                label: String(c.text || c.label || "Take action"),
+                intent: mappedIntent,
+                riskLabel: String(c.archetype || c.riskLabel || mappedIntent),
+              };
+            })
+          : [
+              { id: "c1", label: "Slip past the velvet drape", intent: "physical", riskLabel: "Physical" },
+              { id: "c2", label: "Read the mist's cadence", intent: "analytical", riskLabel: "Analytical" },
+              { id: "c3", label: "Meet her gaze with warm teasing", intent: "social", riskLabel: "Social" },
+              { id: "c4", label: "Grip your woven cord Anchor", intent: "mental", riskLabel: "Mental" },
+            ],
       };
 
       res.json(safeOutcome);
