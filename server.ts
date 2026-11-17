@@ -2,13 +2,15 @@ import "dotenv/config";
 import express from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { GAME_LORE_CONTEXT } from "./src/lore.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
 
-// OLLAMA CONFIGURATION
-const OLLAMA_URL = process.env.OLLAMA_URL || "http://localhost:11434/api/chat";
-const OLLAMA_MODEL = process.env.OLLAMA_MODEL || "hf.co/ReadyArt/Omega-Arsenal-12B-GGUF:Q3_K_M";
+// TOKENREPLY CONFIGURATION (OpenAI-compatible)
+const TOKENREPLY_API_URL = process.env.TOKENREPLY_API_URL || "https://api.tokenreply.com/v1/chat/completions";
+const TOKENREPLY_API_KEY = process.env.TOKENREPLY_API_KEY || "";
+const TOKENREPLY_MODEL = process.env.TOKENREPLY_MODEL || "grok-4.20-fast";
 
 // COMFYUI CONFIGURATION
 const COMFYUI_URL = process.env.COMFYUI_URL || "http://127.0.0.1:8188";
@@ -18,6 +20,15 @@ type VoidPlayerStats = {
   ego?: number;
   intoxication?: number;
 };
+
+// Helper to handle JSON parsing gracefully or return text fallback
+function parseAIResponse(rawResponse: string) {
+  try {
+    return JSON.parse(rawResponse);
+  } catch (e) {
+    return { text: rawResponse, narration: rawResponse };
+  }
+}
 
 // --- UNIFIED AI BRAIN START ---
 async function askTheVoid<T>(
@@ -38,34 +49,63 @@ async function askTheVoid<T>(
       ? `\nPlayer State: Tether ${playerStats.tether ?? 100}/100, Ego ${playerStats.ego ?? 100}/100, Intoxication ${playerStats.intoxication ?? 0}/100.`
       : "";
 
-    const response = await fetch(OLLAMA_URL, {
+    const response = await fetch(TOKENREPLY_API_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${TOKENREPLY_API_KEY}`,
+      },
       body: JSON.stringify({
-        model: OLLAMA_MODEL,
+        model: TOKENREPLY_MODEL,
         messages: [
           { role: "system", content: systemContext + statsStr },
           { role: "user", content: prompt },
         ],
-        format: "json",
+        response_format: { type: "json_object" },
         stream: false,
       }),
       signal: controller.signal,
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status}`);
+      const errText = await response.text();
+      throw new Error(`TokenReply API error (${response.status}): ${errText}`);
     }
 
-    const data = (await response.json()) as { message?: { content?: string } };
-    let text = (data.message?.content ?? "").trim();
+    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    let text = (data.choices?.[0]?.message?.content ?? "").trim();
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       text = jsonMatch[0];
     }
 
-    return JSON.parse(text) as T;
+    let aiResponse: any;
+    try {
+      // Try to parse it as JSON first
+      aiResponse = JSON.parse(text);
+    } catch (e) {
+      // If it's NOT JSON (it's just a sentence), fallback to object structure
+      aiResponse = {
+        narration: text,
+        visual_prompt: text,
+        impact: { tether: 0, ego: 0, intoxication: 0 },
+        psych_impact: { tether: 0, ego: 0, intoxication: 0 },
+      };
+    }
+
+    // --- DYNAMIC PROMPT EXTRACTION (VISUAL DIRECTOR METHOD) ---
+    const targetText = aiResponse.narration || aiResponse.text || text;
+    if (typeof targetText === "string" && targetText.includes("VISUAL:")) {
+      const parts = targetText.split("VISUAL:");
+      const storyOnly = parts[0].trim();
+      const extractedVisual = parts[1].trim();
+      aiResponse.narration = storyOnly;
+      if (aiResponse.text) aiResponse.text = storyOnly;
+      aiResponse.visual_prompt = extractedVisual;
+    }
+
+    return aiResponse as T;
   } catch (error) {
     console.error("Void Communication Error:", error);
     throw error;
@@ -81,11 +121,14 @@ async function generateAIResponse(prompt: string): Promise<string> {
   const timeoutId = setTimeout(() => controller.abort(), 12000);
 
   try {
-    const response = await fetch(OLLAMA_URL, {
+    const response = await fetch(TOKENREPLY_API_URL, {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${TOKENREPLY_API_KEY}`,
+      },
       body: JSON.stringify({
-        model: OLLAMA_MODEL,
+        model: TOKENREPLY_MODEL,
         messages: [
           {
             role: "system",
@@ -100,15 +143,16 @@ async function generateAIResponse(prompt: string): Promise<string> {
     });
 
     if (!response.ok) {
-      throw new Error(`Ollama API error: ${response.status}`);
+      const errText = await response.text();
+      throw new Error(`TokenReply API error (${response.status}): ${errText}`);
     }
 
-    const data = (await response.json()) as { message?: { content?: string } };
-    let text = (data.message?.content ?? "").trim();
+    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    let text = (data.choices?.[0]?.message?.content ?? "").trim();
     text = text.replace(/<\|channel>[\s\S]*?<channel\|>/g, "").trim();
     return text || "The Void listens in silence.";
   } catch (error) {
-    console.error("Ollama Connection Error:", error);
+    console.error("TokenReply Connection Error:", error);
     return "The Void whispers from within the shadows...";
   } finally {
     clearTimeout(timeoutId);
@@ -118,88 +162,63 @@ async function generateAIResponse(prompt: string): Promise<string> {
 // Generate an image via the local ComfyUI API
 async function generateComfyImage(
   promptText: string,
-  negativeText = "worst quality, low quality, blurry, deformed hands, extra fingers, bad anatomy, text, watermark, signature"
+  negativeText = "ugly, deformed, noisy, blurry, low contrast, bad anatomy, extra fingers, mutated hands, poorly drawn face, mutation, deformed, blurry, bad proportions, gross proportions, cloned face, text, watermark, logo, cartoon, 3d render, anime"
 ): Promise<{ filename: string; url: string }> {
-  const seed = Math.floor(Math.random() * 1000000000);
+  const seductiveKeywords = "sensual, seductive, alluring gaze, suggestive pose, detailed skin, high detail eyes, dim atmospheric candlelight, silk and lace, bedroom eyes, smirking, suggestive clothing, hyper-realistic, 8k, masterpiece";
+  const enhancedPrompt = `${seductiveKeywords}, Dark fantasy, Labyrinth of Thorns, ${promptText.substring(0, 300)}`;
+  
+  console.log(`[ComfyUI] Attempting to manifest with StableMondAI (Optimized for RTX 2080): ${enhancedPrompt.substring(0, 80)}...`);
+
+  const seed = Math.floor(Math.random() * 1000000);
   const workflow = {
-    "1": {
-      inputs: { ckpt_name: "StableMondAI-SDG.safetensors" },
-      class_type: "CheckpointLoaderSimple",
-    },
-    "2": {
-      inputs: {
-        model: ["1", 0],
-        seed,
-        steps: 20,
-        cfg: 7,
-        sampler_name: "euler",
-        scheduler: "simple",
-        denoise: 1,
-        positive: ["3", 0],
-        negative: ["5", 0],
-        latent_image: ["4", 0],
-      },
-      class_type: "KSampler",
-    },
-    "3": {
-      inputs: { text: promptText, clip: ["1", 1] },
-      class_type: "CLIPTextEncode",
-    },
-    "4": {
-      inputs: { width: 512, height: 768, batch_size: 1 },
-      class_type: "EmptyLatentImage",
-    },
-    "5": {
-      inputs: { text: negativeText, clip: ["1", 1] },
-      class_type: "CLIPTextEncode",
-    },
-    "8": {
-      inputs: { samples: ["2", 0], vae: ["1", 2] },
-      class_type: "VAEDecode",
-    },
-    "10": {
-      inputs: { filename_prefix: "Labyrinth", images: ["8", 0] },
-      class_type: "SaveImage",
-    },
+    "3": { "class_type": "KSampler", "inputs": { "seed": seed, "steps": 15, "cfg": 7, "sampler_name": "euler", "scheduler": "normal", "denoise": 1, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0] } },
+    "4": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "StableMondAI-SDG.safetensors" } },
+    "5": { "class_type": "EmptyLatentImage", "inputs": { "width": 512, "height": 512, "batch_size": 1 } },
+    "6": { "class_type": "CLIPTextEncode", "inputs": { "text": enhancedPrompt, "clip": ["4", 1] } },
+    "7": { "class_type": "CLIPTextEncode", "inputs": { "text": negativeText, "clip": ["4", 1] } },
+    "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["4", 2] } },
+    "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "Labyrinth_Game", "images": ["8", 0] } },
   };
 
-  const submitRes = await fetch(`${COMFYUI_URL}/prompt`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ prompt: workflow }),
-  });
+  try {
+    const submitRes = await fetch(`${COMFYUI_URL}/prompt`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt: workflow }),
+    });
 
-  if (!submitRes.ok) {
-    throw new Error(`ComfyUI queue failed: ${submitRes.status} ${submitRes.statusText}`);
-  }
+    if (!submitRes.ok) {
+      const errorText = await submitRes.text();
+      console.error(`[ComfyUI] API Rejected Request: ${submitRes.status} - ${errorText}`);
+      throw new Error(`ComfyUI API Error: ${submitRes.status}`);
+    }
 
-  const { prompt_id } = (await submitRes.json()) as { prompt_id: string };
-  if (!prompt_id) {
-    throw new Error("ComfyUI did not return a prompt_id");
-  }
+    const { prompt_id } = (await submitRes.json()) as { prompt_id?: string };
+    if (!prompt_id) {
+      throw new Error("ComfyUI did not return a prompt_id");
+    }
+    console.log(`[ComfyUI] Prompt queued. ID: ${prompt_id}. Polling for image...`);
 
-  // Poll for completion (up to 45s)
-  const startTime = Date.now();
-  while (Date.now() - startTime < 45000) {
-    await new Promise((r) => setTimeout(r, 1200));
-    try {
+    const startTime = Date.now();
+    while (Date.now() - startTime < 60000) {
+      await new Promise((r) => setTimeout(r, 2000));
       const histRes = await fetch(`${COMFYUI_URL}/history/${prompt_id}`);
       if (histRes.ok) {
         const histData = (await histRes.json()) as Record<string, any>;
-        if (histData[prompt_id]?.outputs?.["10"]?.images?.[0]?.filename) {
-          const filename = histData[prompt_id].outputs["10"].images[0].filename;
-          return {
-            filename,
-            url: `/api/comfy/image/${encodeURIComponent(filename)}`,
-          };
+        if (histData[prompt_id]?.outputs?.["9"]?.images?.[0]?.filename) {
+          const filename = histData[prompt_id].outputs["9"].images[0].filename;
+          console.log(`[ComfyUI] Success! Image manifested: ${filename}`);
+          return { filename, url: `/api/comfy/image/${encodeURIComponent(filename)}` };
         }
       }
-    } catch {
-      // Continue polling
     }
-  }
 
-  throw new Error("ComfyUI image generation timed out");
+    throw new Error("ComfyUI image generation timed out after 60s");
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`[ComfyUI] Critical Failure: ${message}`);
+    throw error;
+  }
 }
 const ARCHETYPE_LIST = [
   "arachne",
@@ -294,7 +313,8 @@ async function startServer() {
   app.post("/api/interact", async (req, res) => {
     const { userPrompt, playerStats } = req.body;
     try {
-      const systemPrompt = `You are the Director of 'The Euphoric Void'. You MUST respond ONLY in JSON.
+      const systemPrompt = `${GAME_LORE_CONTEXT}
+You are the Director of 'The Euphoric Void'. You MUST respond ONLY in JSON.
 Structure: { "narration": "...", "visual_prompt": "...", "psych_impact": { "tether": 0, "ego": 0, "intoxication": 0 } }`;
       const directorData = await askTheVoid<any>(
         userPrompt || "Continue exploration",
@@ -325,7 +345,8 @@ Structure: { "narration": "...", "visual_prompt": "...", "psych_impact": { "teth
       const { userPrompt, playerStats } = req.body;
 
       try {
-          const systemPrompt = `You are the Director of 'The Euphoric Void'. You MUST respond ONLY in JSON.
+          const systemPrompt = `${GAME_LORE_CONTEXT}
+You are the Director of 'The Euphoric Void'. You MUST respond ONLY in JSON.
 Structure: { "narration": "...", "visual_prompt": "...", "impact": { "tether": 0, "ego": 0, "intoxication": 0 } }`;
           const directorPlan = await askTheVoid<any>(userPrompt || "Continue exploration", systemPrompt, playerStats);
           const imageData = await generateComfyImage(directorPlan.visual_prompt);
@@ -370,37 +391,15 @@ Structure: { "narration": "...", "visual_prompt": "...", "impact": { "tether": 0
         visualTraits,
       } = req.body ?? {};
 
-      let finalPrompt = prompt;
-      if (!finalPrompt) {
-        const archetypeBase: Record<string, string> = {
-          arachne: "1girl, spider girl, arachne, gothic boudoir, silver silk webs, multiple spider legs behind back, glowing purple eyes, pale skin, elegant",
-          lamia: "1girl, snake girl, lamia, iridescent dark scales, golden serpentine eyes, candlelit stone temple, mesmerizing, regal posture",
-          succubus: "1girl, demon girl, succubus, curved dark horns, bat wings, velvet boudoir, rose petals, embers, sensual smirk, glowing amber eyes",
-          moth: "1girl, moth girl, luna mothkin, large translucent moth wings, soft fluffy neck ruff, glowing antennae, bioluminescent spore dust",
-          alraune: "1girl, plant girl, alraune flower nymph, overgrown rose conservatory, rose vines, crimson flower petals, floral hair ornament, seductive bloom",
-          slime: "1girl, slime girl, translucent glowing liquid body, gelatinous slime tendrils, soft aquatic luminescence, delicate and fluid",
-          fungal: "1girl, mushroom dryad, fungal spore cloak, bioluminescent glowing mushroom caps, misty overgrown arches, ethereal glow",
-        };
-
-        const stageModifiers: Record<string, string> = {
-          portrait: "character portrait, upper body, beautiful detailed anime face, masterpiece, looking at viewer",
-          battle: "dynamic battle confrontation, reaching forward, glowing aura, intense gothic atmosphere",
-          close: "close-up portrait, romantic intimate proximity, gentle embrace, flushed cheeks, soft romantic lighting",
-          deep: "lost in sweet reverie, euphoric trance, cocooned in soft velvet embrace, dreamlike misty haze",
-          kiss: "passionate romantic kiss, tender kiss, lips touching, closed eyes, highly emotional, cinematic lighting, masterpiece",
-        };
-
-        const base = archetypeBase[archetype] || archetypeBase.succubus;
-        const stageMod = stageModifiers[stage] || stageModifiers.portrait;
-        const extraTraits = visualTraits ? `, ${visualTraits}` : "";
-        finalPrompt = `masterpiece, highly detailed, gothic romance, ${base}${extraTraits}, ${stageMod}`;
-      }
-
+      // Simplified prompt logic for debugging
+      const finalPrompt = prompt || `1girl, ${archetype}, gothic romance, euphoric void, masterpiece`;
+      
+      console.log(`[Server] Requesting image for: ${finalPrompt}`);
       const result = await generateComfyImage(finalPrompt);
       res.json({ ok: true, ...result });
     } catch (err: any) {
-      console.error("ComfyUI generation error:", err);
-      res.status(500).json({ ok: false, error: err.message || "Failed to generate image" });
+      console.error("[Server] /api/comfy/generate failed:", err.message);
+      res.status(500).json({ ok: false, error: err.message || "Internal Server Error" });
     }
   });
 
