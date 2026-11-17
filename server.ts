@@ -7,10 +7,10 @@ import { GAME_LORE_CONTEXT } from "./src/lore.ts";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
 
-// TOKENREPLY CONFIGURATION (OpenAI-compatible)
-const TOKENREPLY_API_URL = process.env.TOKENREPLY_API_URL || "https://api.tokenreply.com/v1/chat/completions";
-const TOKENREPLY_API_KEY = process.env.TOKENREPLY_API_KEY || "";
-const TOKENREPLY_MODEL = process.env.TOKENREPLY_MODEL || "grok-4.20-fast";
+// LOCAL LLM / NEMOTRON CONFIGURATION (OpenAI-compatible)
+const TOKENREPLY_API_URL = "http://localhost:1234/v1/chat/completions";
+const TOKENREPLY_API_KEY = "lm-studio";
+const TOKENREPLY_MODEL = "llama-3.1-nemotron-8b-ultralong-4m-instruct";
 
 // COMFYUI CONFIGURATION
 const COMFYUI_URL = process.env.COMFYUI_URL || "http://127.0.0.1:8188";
@@ -37,7 +37,7 @@ async function askTheVoid<T>(
   playerStats?: VoidPlayerStats
 ): Promise<T> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 40000);
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
 
   try {
     const hasPlayerStats =
@@ -61,7 +61,6 @@ async function askTheVoid<T>(
           { role: "system", content: systemContext + statsStr },
           { role: "user", content: prompt },
         ],
-        response_format: { type: "json_object" },
         stream: false,
       }),
       signal: controller.signal,
@@ -69,7 +68,7 @@ async function askTheVoid<T>(
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`TokenReply API error (${response.status}): ${errText}`);
+      throw new Error(`LocalLLM API error (${response.status}): ${errText}`);
     }
 
     const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
@@ -118,7 +117,7 @@ async function askTheVoid<T>(
 // AI Response Generator for status check
 async function generateAIResponse(prompt: string): Promise<string> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 12000);
+  const timeoutId = setTimeout(() => controller.abort(), 120000);
 
   try {
     const response = await fetch(TOKENREPLY_API_URL, {
@@ -144,7 +143,7 @@ async function generateAIResponse(prompt: string): Promise<string> {
 
     if (!response.ok) {
       const errText = await response.text();
-      throw new Error(`TokenReply API error (${response.status}): ${errText}`);
+      throw new Error(`LocalLLM API error (${response.status}): ${errText}`);
     }
 
     const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
@@ -152,7 +151,7 @@ async function generateAIResponse(prompt: string): Promise<string> {
     text = text.replace(/<\|channel>[\s\S]*?<channel\|>/g, "").trim();
     return text || "The Void listens in silence.";
   } catch (error) {
-    console.error("TokenReply Connection Error:", error);
+    console.error("LocalLLM Connection Error:", error);
     return "The Void whispers from within the shadows...";
   } finally {
     clearTimeout(timeoutId);
