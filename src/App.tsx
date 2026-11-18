@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pause, RotateCcw, BookOpen } from "lucide-react";
+import { Pause, RotateCcw, BookOpen, Cpu } from "lucide-react";
 import type {
   ActionIntent,
   ArchetypeId,
@@ -55,6 +55,16 @@ import { ChroniclePanel } from "./components/ChroniclePanel";
 import { HunterDossier, type CompanionActionKind } from "./components/HunterDossier";
 import { GameModal } from "./components/GameModal";
 import { CompendiumModal } from "./components/CompendiumModal";
+import { LocalBrainModal } from "./components/LocalBrainModal";
+import {
+  generateNpcReplyWithLocalBrain,
+  initFloorWithLocalBrain,
+  isRemoteHttpsUrl,
+  loadLocalBrainConfig,
+  runFullTurnWithLocalBrain,
+  saveLocalBrainConfig,
+  type LocalBrainConfig,
+} from "./utils/localBrain";
 
 const INITIAL_INVENTORY: InventoryItem[] = [
   { id: "clarity_tonic", name: "Clarity Tonic", effectLabel: "-30 Intox · +15 Tether", count: 2 },
@@ -113,6 +123,160 @@ const VELVET_THRALL_BY_ARCHETYPE: Record<
 
 function clampStat(n: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, Math.round(n)));
+}
+
+async function postJsonWithRetry<T>(url: string, body: Record<string, unknown>): Promise<T> {
+  const attempt = async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 55000);
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: controller.signal,
+        body: JSON.stringify(body),
+      });
+      const json = (await res.json()) as T;
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      return json;
+    } finally {
+      clearTimeout(timer);
+    }
+  };
+
+  try {
+    return await attempt();
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    return await attempt();
+  }
+}
+
+function buildFallbackInitSession(
+  targetFloor: number,
+  protagonistName: string,
+  roomName: string
+): InitSessionResponse {
+  return {
+    floorTitle:
+      targetFloor === 1
+        ? "Velvet Conservatory Wing"
+        : targetFloor === 2
+        ? "Crimson Silk Gallery"
+        : "Mortal Tear Sanctuary",
+    protagonistOpening: `${protagonistName} wakes beside ${roomName} with rose-tinted mist curling softly around his sleeves. His woven Anchor bracelet warms against his pulse as distant footsteps echo behind velvet drapes.`,
+    hunters: [
+      {
+        id: `hunter-f${targetFloor}-0-${Date.now()}`,
+        name: targetFloor === 1 ? "Seraphina" : targetFloor === 2 ? "Vespera" : "Sylvara",
+        title:
+          targetFloor === 1
+            ? "Crimson Bloom Sovereign"
+            : targetFloor === 2
+            ? "Velvet Canopy Weaver"
+            : "Obsidian Throne Keeper",
+        species:
+          targetFloor === 1
+            ? "Crimson Alraune"
+            : targetFloor === 2
+            ? "Arachne Weaver"
+            : "Obsidian Lamia",
+        archetype: targetFloor === 1 ? "alraune" : targetFloor === 2 ? "arachne" : "lamia",
+        desireArchetype: targetFloor === 1 ? "Siren" : "Enveloper",
+        npcRole: targetFloor === 1 ? "Kindly Guide" : "Rival",
+        personality: "Velvet-voiced, intensely attentive, and protective of anyone who earns her grace",
+        huntingStyle: "Draws travelers closer through crimson petal-scent and enveloping velvet embraces",
+        weakness: "Sharp analytical reading of her rhythmic cadence and honest banter",
+        visualTraits: "Flowing rose-crimson hair framed by thorny vines and velvet petals",
+        disposition: "Amused",
+        alertness: 48,
+        affinity: 10,
+        met: false,
+        lastLine: "Easy now, wanderer. Let the petals catch your breath before you hurry away.",
+      },
+      {
+        id: `hunter-f${targetFloor}-1-${Date.now()}`,
+        name: targetFloor === 1 ? "Caelia" : targetFloor === 2 ? "Nyxia" : "Undine",
+        title:
+          targetFloor === 1
+            ? "Lantern Spore Dryad"
+            : targetFloor === 2
+            ? "Moon-Wing Whisperer"
+            : "Crystal Tendril Spirit",
+        species:
+          targetFloor === 1
+            ? "Twilight Mycelial Dryad"
+            : targetFloor === 2
+            ? "Luminous Mothkin"
+            : "Crystal Slime Spirit",
+        archetype: targetFloor === 1 ? "fungal" : targetFloor === 2 ? "moth" : "slime",
+        desireArchetype: "Whisperer",
+        npcRole: "Trickster",
+        personality: "Dreamy, possessive, and fascinated by travelers clinging to waking memories",
+        huntingStyle: "Soft twilight mist and sudden close-quarters cradles",
+        weakness: "Direct emotional honesty or stepping cleanly outside her mist",
+        visualTraits: "Luminous twilight eyes glowing gently beneath silk and veil",
+        disposition: "Stalking",
+        alertness: 52,
+        affinity: 6,
+        met: false,
+        lastLine: "Stay beneath the soft lanterns—why rush back into cold air?",
+      },
+    ],
+    choices: DEFAULT_CHOICES,
+  };
+}
+
+function buildFallbackTurnOutcome(params: {
+  protagonistName: string;
+  gameMode: GameMode;
+  tile: DungeonTile;
+  tileEvent: string;
+  actionIntent: ActionIntent;
+  targetHunter: MonsterGirlNPC | null;
+  baseChoices: TacticalChoice[];
+}): TurnOutcomeResponse {
+  const { protagonistName, gameMode, tile, tileEvent, actionIntent, targetHunter, baseChoices } =
+    params;
+  const isBattle = gameMode === "SEDUCTION_BATTLE" && Boolean(targetHunter);
+  const hunterName = targetHunter?.name ?? "Seraphina";
+
+  return {
+    protagonistDmText: isBattle
+      ? `${protagonistName} holds steady inside ${tile.roomName} while ${hunterName} circles just an arm's reach away through warm rose-tinted mist.`
+      : `${protagonistName} surveys ${tile.examined ? tile.roomName : tile.doorLabel}. Candlelit mist settles softly across draped velvet and stone.`,
+    hunterDialogue: isBattle
+      ? `Careful now, ${protagonistName}... you're standing closer than you realize.`
+      : "",
+    hunterActionSummary: isBattle
+      ? `${hunterName} steps close enough for warm rose perfume to brush your collar.`
+      : "The chamber holds in candlelit stillness.",
+    embracePose: isBattle && actionIntent === "reciprocate" ? "Petal Kiss" : "",
+    intimacyContact: isBattle && actionIntent === "reciprocate" ? "deep" : "none",
+    skillCheckSummary: `${actionIntent} · Resolved`,
+    newDisposition: targetHunter?.disposition ?? "Amused",
+    sceneBackdrop: tile.examined ? tile.backdrop : "corridor",
+    lightingMood: isBattle ? "candlelit_rose" : "violet_mist",
+    entityStance: isBattle ? "close" : "distant",
+    visualEffect: tile.backdrop === "conservatory" ? "spores" : "petals",
+    sceneCaption: isBattle
+      ? `${hunterName} lingers inside ${tile.roomName} amidst warm rose mist.`
+      : `Rose haze drifts softly through ${tile.roomName}.`,
+    battleEnded:
+      isBattle && tileEvent !== "ambush_start" && actionIntent === "reciprocate"
+        ? "charmed"
+        : "none",
+    intoxicationDelta: actionIntent === "anchor" ? -14 : isBattle ? 6 : 0,
+    tetherDelta: actionIntent === "anchor" ? 14 : 0,
+    selfhoodDelta: actionIntent === "anchor" ? 12 : 0,
+    hesitationDelta: 0,
+    alertnessDelta: isBattle && actionIntent === "reciprocate" ? -20 : 0,
+    affinityDelta: isBattle && actionIntent === "reciprocate" ? 24 : 0,
+    stunTurns: isBattle && actionIntent === "reciprocate" ? 3 : 0,
+    choices: baseChoices.length >= 4 ? baseChoices : DEFAULT_CHOICES,
+  };
 }
 
 export function App() {
@@ -175,6 +339,10 @@ export function App() {
   const [endingDetails, setEndingDetails] = useState<EndingDetails | null>(null);
   const [compendium, setCompendium] = useState<VoidCompendiumData>(() => loadCompendium());
   const [compendiumOpen, setCompendiumOpen] = useState(false);
+  const [localBrainConfig, setLocalBrainConfig] = useState<LocalBrainConfig>(() =>
+    loadLocalBrainConfig()
+  );
+  const [localBrainOpen, setLocalBrainOpen] = useState(false);
   const [savedRun, setSavedRun] = useState(() => loadSavedRun());
 
   const turnLockRef = useRef(false);
@@ -396,20 +564,46 @@ export function App() {
       const startTile = revealedGrid[startPos[0]][startPos[1]];
 
       try {
-        const res = await fetch("/api/game/init-session", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
+        const isColabTunnel =
+          localBrainConfig.enabled && isRemoteHttpsUrl(localBrainConfig.baseUrl);
+        const useBrowserLmStudio =
+          localBrainConfig.enabled &&
+          Boolean(localBrainConfig.baseUrl.trim()) &&
+          !isColabTunnel;
+
+        let data: InitSessionResponse;
+        try {
+          data = await postJsonWithRetry<InitSessionResponse>("/api/game/init-session", {
             protagonistName: currentStats.name,
             floor: targetFloor,
             maxFloors: currentStats.maxFloors,
             existingHunterNames: currentSeen,
             roomName: startTile.roomName,
             charmedCompanions: companions,
-          }),
-        });
-        const data = (await res.json()) as InitSessionResponse;
-        if (!res.ok) throw new Error("Failed to initialize sector");
+            colabUrl: isColabTunnel ? localBrainConfig.baseUrl : "",
+            colabModel: isColabTunnel ? localBrainConfig.modelName : "",
+            brainScope: isColabTunnel ? localBrainConfig.scope : "full_turn",
+          });
+        } catch {
+          data = buildFallbackInitSession(targetFloor, currentStats.name, startTile.roomName);
+        }
+
+        if (useBrowserLmStudio && localBrainConfig.scope === "full_turn") {
+          try {
+            data = await initFloorWithLocalBrain({
+              config: localBrainConfig,
+              protagonistName: currentStats.name,
+              floor: targetFloor,
+              maxFloors: currentStats.maxFloors,
+              roomName: startTile.roomName,
+              existingHunterNames: currentSeen,
+              charmedCompanions: companions,
+              fallback: data,
+            });
+          } catch {
+            // Fall back cleanly to server response
+          }
+        }
 
         const spawnedHunters: MonsterGirlNPC[] = (data.hunters ?? []).map((h, idx) => {
           const spawn = hunterSpawns[idx] ?? [1, 3];
@@ -471,7 +665,7 @@ export function App() {
         setLoading(false);
       }
     },
-    [pushChronicle]
+    [pushChronicle, localBrainConfig]
   );
 
   const startNewGame = useCallback(async () => {
@@ -569,42 +763,110 @@ export function App() {
       );
 
       try {
-        const res = await fetch("/api/game/turn", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            protagonistName: baseStats.name,
-            floor: baseStats.floor,
-            maxFloors: baseStats.maxFloors,
-            turn: baseStats.turn,
-            gameMode: params.nextMode,
-            intoxication: baseStats.intoxication,
-            tether: baseStats.tether,
-            selfhood: baseStats.selfhood,
-            maxSelfhood: baseStats.maxSelfhood,
-            hesitation: baseStats.hesitation,
-            ringEquipped: baseStats.ringEquipped,
-            keysOnFloor: baseStats.keysOnFloor,
-            keysNeeded: baseStats.keysNeeded,
-            memoryShardsCount: (baseStats.memoryShards ?? []).length,
-            roomName: params.tile.roomName,
-            doorLabel: params.tile.doorLabel,
-            tileBackdrop: params.tile.backdrop,
-            tileExamined: params.tile.examined,
-            isDoorway: params.tile.isDoorway,
-            tileEvent: params.tileEvent,
-            playerAction: params.playerAction,
-            actionIntent: params.actionIntent,
-            activeHunter: params.targetHunter,
-            rivalHunter: params.secondaryHunter,
-            hunterDistance: minHunterDist,
-            recentChronicle: chronicle.slice(-4).map((c) => `${c.speakerName}: ${c.text}`),
-            charmedCompanions,
-          }),
-        });
+        let data: TurnOutcomeResponse | null = null;
+        const recentHistory = chronicle.slice(-4).map((c) => `${c.speakerName}: ${c.text}`);
+        const isColabTunnel =
+          localBrainConfig.enabled && isRemoteHttpsUrl(localBrainConfig.baseUrl);
+        const useBrowserLmStudio =
+          localBrainConfig.enabled &&
+          Boolean(localBrainConfig.baseUrl.trim()) &&
+          !isColabTunnel;
 
-        const data = (await res.json()) as TurnOutcomeResponse;
-        if (!res.ok) throw new Error("Turn processing failed");
+        if (useBrowserLmStudio && localBrainConfig.scope === "full_turn") {
+          try {
+            data = await runFullTurnWithLocalBrain({
+              config: localBrainConfig,
+              protagonistName: baseStats.name,
+              floor: baseStats.floor,
+              maxFloors: baseStats.maxFloors,
+              turn: baseStats.turn,
+              gameMode: params.nextMode,
+              stats: baseStats,
+              tile: params.tile,
+              tileEvent: params.tileEvent,
+              playerAction: params.playerAction,
+              actionIntent: params.actionIntent,
+              activeHunter: params.targetHunter,
+              rivalHunter: params.secondaryHunter,
+              recentChronicle: recentHistory,
+              baseChoices: choices,
+            });
+          } catch {
+            data = null;
+          }
+        }
+
+        if (!data) {
+          try {
+            data = await postJsonWithRetry<TurnOutcomeResponse>("/api/game/turn", {
+              protagonistName: baseStats.name,
+              floor: baseStats.floor,
+              maxFloors: baseStats.maxFloors,
+              turn: baseStats.turn,
+              gameMode: params.nextMode,
+              intoxication: baseStats.intoxication,
+              tether: baseStats.tether,
+              selfhood: baseStats.selfhood,
+              maxSelfhood: baseStats.maxSelfhood,
+              hesitation: baseStats.hesitation,
+              ringEquipped: baseStats.ringEquipped,
+              keysOnFloor: baseStats.keysOnFloor,
+              keysNeeded: baseStats.keysNeeded,
+              memoryShardsCount: (baseStats.memoryShards ?? []).length,
+              roomName: params.tile.roomName,
+              doorLabel: params.tile.doorLabel,
+              tileBackdrop: params.tile.backdrop,
+              tileExamined: params.tile.examined,
+              isDoorway: params.tile.isDoorway,
+              tileEvent: params.tileEvent,
+              playerAction: params.playerAction,
+              actionIntent: params.actionIntent,
+              activeHunter: params.targetHunter,
+              rivalHunter: params.secondaryHunter,
+              hunterDistance: minHunterDist,
+              recentChronicle: recentHistory,
+              charmedCompanions,
+              colabUrl: isColabTunnel ? localBrainConfig.baseUrl : "",
+              colabModel: isColabTunnel ? localBrainConfig.modelName : "",
+              brainScope: isColabTunnel ? localBrainConfig.scope : "full_turn",
+            });
+          } catch {
+            data = buildFallbackTurnOutcome({
+              protagonistName: baseStats.name,
+              gameMode: params.nextMode,
+              tile: params.tile,
+              tileEvent: params.tileEvent,
+              actionIntent: params.actionIntent,
+              targetHunter: params.targetHunter,
+              baseChoices: choices,
+            });
+          }
+
+          if (
+            useBrowserLmStudio &&
+            localBrainConfig.scope === "npc_only" &&
+            params.nextMode === "SEDUCTION_BATTLE" &&
+            params.targetHunter
+          ) {
+            try {
+              data = await generateNpcReplyWithLocalBrain({
+                config: localBrainConfig,
+                protagonistName: baseStats.name,
+                hunter: params.targetHunter,
+                playerAction: params.playerAction,
+                actionIntent: params.actionIntent,
+                roomName: params.tile.roomName,
+                intoxication: baseStats.intoxication,
+                tether: baseStats.tether,
+                selfhood: baseStats.selfhood,
+                recentChronicle: recentHistory,
+                baseOutcome: data,
+              });
+            } catch {
+              // Keep base server response if LM Studio is unreachable
+            }
+          }
+        }
 
         const cfg = DIFFICULTY_CONFIG[baseStats.difficulty ?? "standard"];
         const drainMult = baseStats.lucidWardTurns > 0 ? 0.65 * cfg.drainScale : cfg.drainScale;
@@ -793,7 +1055,17 @@ export function App() {
         setLoading(false);
       }
     },
-    [stats, hunters, grid, chronicle, charmedCompanions, pushChronicle, triggerEnding]
+    [
+      stats,
+      hunters,
+      grid,
+      chronicle,
+      charmedCompanions,
+      choices,
+      localBrainConfig,
+      pushChronicle,
+      triggerEnding,
+    ]
   );
 
   // Move Ket 1 tile on grid
@@ -1562,12 +1834,20 @@ export function App() {
           compendiumCount={compendiumCount}
           difficulty={difficulty}
           onSelectDifficulty={setDifficulty}
+          onOpenLocalBrain={() => setLocalBrainOpen(true)}
+          localBrainEnabled={localBrainConfig.enabled}
           loading={loading}
         />
         <CompendiumModal
           open={compendiumOpen}
           data={compendium}
           onClose={() => setCompendiumOpen(false)}
+        />
+        <LocalBrainModal
+          open={localBrainOpen}
+          config={localBrainConfig}
+          onSave={(next) => setLocalBrainConfig(saveLocalBrainConfig(next))}
+          onClose={() => setLocalBrainOpen(false)}
         />
       </>
     );
@@ -1587,6 +1867,17 @@ export function App() {
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setLocalBrainOpen(true)}
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border text-xs transition cursor-pointer ${
+              localBrainConfig.enabled
+                ? "border-rose-400/50 bg-rose-500/20 text-rose-100"
+                : "border-white/15 bg-white/5 hover:bg-white/10 text-[#f2efe9]/80"
+            }`}
+          >
+            <Cpu className="w-3.5 h-3.5" />
+            <span className="hidden sm:inline">AI Brain</span>
+          </button>
           <button
             onClick={() => setCompendiumOpen(true)}
             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-white/15 bg-white/5 hover:bg-white/10 text-xs text-rose-200 transition cursor-pointer"
@@ -1714,6 +2005,13 @@ export function App() {
         open={compendiumOpen}
         data={compendium}
         onClose={() => setCompendiumOpen(false)}
+      />
+
+      <LocalBrainModal
+        open={localBrainOpen}
+        config={localBrainConfig}
+        onSave={(next) => setLocalBrainConfig(saveLocalBrainConfig(next))}
+        onClose={() => setLocalBrainOpen(false)}
       />
     </div>
   );
