@@ -68,7 +68,11 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   }, []);
 
   return (
-    <div className="relative min-h-screen w-full overflow-hidden bg-[#0b0c10] text-[#f2efe9] flex items-center justify-center">
+    <div className="relative min-h-screen w-full overflow-hidden bg-obsidian text-parchment flex items-center justify-center">
+      {/* Theme Smoke Test Box */}
+      <div className="absolute top-4 left-4 z-50 bg-oxblood text-parchment p-4 shadow-gothic rounded border border-mossy">
+        Theme Test: If this box is dark red with parchment text, the theme is working!
+      </div>
       {/* Background Key Art with Vignette */}
       <img
         src={TITLE_KEY_ART}

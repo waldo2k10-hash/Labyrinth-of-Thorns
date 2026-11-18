@@ -5,6 +5,23 @@
   --font-display: "Cinzel", Georgia, serif;
   --font-sans: "Plus Jakarta Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, monospace;
+
+  /* --- The Bruised & Botanical Palette --- */
+  
+  /* Deep Crimson / Oxblood: Passion, blood, and thorns */
+  --color-oxblood: #4A0404;
+  
+  /* Obsidian / Charcoal Black: Shadows and the void */
+  --color-obsidian: #1A1A1B;
+  
+  /* Forest Green / Mossy Olive: Suffocating overgrowth */
+  --color-mossy: #2F3528;
+  
+  /* Pale Parchment / Alabaster: High contrast skin/stone tones */
+  --color-parchment: #F5F5DC;
+
+  /* --- Custom Shadows for Gothic Depth --- */
+  --shadow-gothic: 0 10px 30px -10px rgba(0, 0, 0, 0.8);
 }
 
 @layer base {
@@ -12,8 +29,8 @@
   body,
   #root {
     height: 100%;
-    background-color: #0b0c10;
-    color: #f2efe9;
+    background-color: var(--color-obsidian);
+    color: var(--color-parchment);
     font-family: var(--font-sans);
   }
 }
@@ -26,11 +43,11 @@
   background: transparent;
 }
 .labyrinth-scroll::-webkit-scrollbar-thumb {
-  background: rgba(242, 239, 233, 0.14);
+  background: rgba(245, 245, 220, 0.14);
   border-radius: 3px;
 }
 .labyrinth-scroll::-webkit-scrollbar-thumb:hover {
-  background: rgba(242, 239, 233, 0.25);
+  background: rgba(245, 245, 220, 0.25);
 }
 
 @media (prefers-reduced-motion: reduce) {

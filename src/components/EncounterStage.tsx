@@ -19,6 +19,7 @@ import {
   SCENE_BACKDROPS,
   computeBattleTier,
 } from "../utils/portraits";
+import { getBattleTierStyles } from "../utils/battleTheme";
 
 export interface CompanionMomentState {
   archetype: ArchetypeId;
@@ -292,10 +293,15 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
       ? "from-sky-950/40 via-slate-950/25 to-[#0b0c10]"
       : "from-violet-950/40 via-[#12131a]/30 to-[#0b0c10]";
 
+  const styles = getBattleTierStyles(tier);
+
   return (
-    <section className="relative rounded-xl overflow-hidden border border-white/10 bg-[#12131a] shadow-2xl">
+    <section className={`relative rounded-xl overflow-hidden border transition-all duration-1000 ease-in-out ${styles.container} shadow-2xl`}>
+      {/* Atmospheric Overlay for Battle Tier */}
+      <div className={`pointer-events-none absolute inset-0 transition-opacity duration-1000 z-0 ${styles.overlay}`} />
+      
       {/* Main Scene Backdrop / Tiered Battle Artwork */}
-      <div className="relative h-64 sm:h-80 w-full overflow-hidden">
+      <div className="relative z-10 h-64 sm:h-80 w-full overflow-hidden">
         {comfyArtwork ? (
           <>
             <img
