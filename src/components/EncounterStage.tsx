@@ -38,6 +38,8 @@ interface EncounterStageProps {
   entityStance: EntityStance;
   visualEffect: VisualEffect;
   sceneCaption: string;
+  visualPrompt?: string;
+  turn?: number;
   gameMode: GameMode;
   activeHunter: MonsterGirlNPC | null;
   rivalHunter: MonsterGirlNPC | null;
@@ -60,6 +62,8 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
   entityStance,
   visualEffect,
   sceneCaption,
+  visualPrompt = "",
+  turn = 1,
   gameMode,
   activeHunter,
   rivalHunter,
@@ -72,8 +76,12 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [comfyArtwork, setComfyArtwork] = useState<string | null>(null);
+  const [comfyPromptUsed, setComfyPromptUsed] = useState<string>("");
+  const [comfyError, setComfyError] = useState<string>("");
   const [isGenerating, setIsGenerating] = useState<boolean>(false);
   const [comfyAvailable, setComfyAvailable] = useState<boolean>(false);
+  const [autoPaint, setAutoPaint] = useState<boolean>(false);
+  const lastAutoKeyRef = useRef<string>("");
 
   useEffect(() => {
     let active = true;
@@ -90,34 +98,6 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
     };
   }, []);
 
-  useEffect(() => {
-    setComfyArtwork(null);
-  }, [activeHunter?.id]);
-
-  const handleGenerateArtwork = async () => {
-    if (isGenerating) return;
-    setIsGenerating(true);
-    try {
-      const res = await fetch("/api/comfy/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          archetype: activeHunter?.archetype || "succubus",
-          stage: tier,
-          visualTraits: activeHunter?.visualTraits || "",
-        }),
-      });
-      const data = await res.json();
-      if (data.ok && data.url) {
-        setComfyArtwork(data.url);
-      }
-    } catch (e) {
-      console.error("Failed to generate ComfyUI artwork:", e);
-    } finally {
-      setIsGenerating(false);
-    }
-  };
-
   const isBattle = gameMode === "SEDUCTION_BATTLE" && Boolean(activeHunter);
 
   const tier = activeHunter
@@ -132,6 +112,70 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
         disposition: activeHunter.disposition,
       })
     : "confrontation";
+
+  const sceneSyncKey = `${turn}|${gameMode}|${activeHunter?.id ?? ""}|${companionMoment?.pose ?? ""}|${roomName}|${embracePose}|${visualPrompt}`;
+
+  useEffect(() => {
+    setComfyArtwork(null);
+    setComfyError("");
+  }, [activeHunter?.id, companionMoment?.pose, turn, roomName]);
+
+  const handleGenerateArtwork = async () => {
+    if (isGenerating) return;
+    setIsGenerating(true);
+    setComfyError("");
+    try {
+      const hasSubject = Boolean(companionMoment) || (isBattle && Boolean(activeHunter));
+      const res = await fetch("/api/comfy/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: visualPrompt,
+          sceneCaption: companionMoment ? companionMoment.caption : sceneCaption,
+          archetype: companionMoment?.archetype || (isBattle ? activeHunter?.archetype : "") || "",
+          species: isBattle ? activeHunter?.species || "" : "",
+          hunterName: companionMoment?.name || (isBattle ? activeHunter?.name : "") || "",
+          visualTraits: isBattle ? activeHunter?.visualTraits || "" : "",
+          disposition: companionMoment ? "Charmed" : isBattle ? activeHunter?.disposition || "" : "",
+          stage: companionMoment ? "kiss" : tier,
+          embracePose: companionMoment?.pose || (isBattle ? embracePose : ""),
+          intimacyContact: companionMoment ? "deep" : isBattle ? intimacyContact : "none",
+          entityStance: companionMoment ? "embrace" : isBattle ? entityStance : "distant",
+          sceneBackdrop,
+          lightingMood: companionMoment ? "candlelit_rose" : lightingMood,
+          visualEffect: companionMoment ? "petals" : visualEffect,
+          roomName: tileExamined ? roomName : doorLabel,
+          intoxication,
+          isBattle: hasSubject,
+          aspect: "scene",
+        }),
+      });
+      const data = await res.json();
+      if (data.ok && data.url) {
+        setComfyArtwork(data.url);
+        if (typeof data.promptUsed === "string") {
+          setComfyPromptUsed(data.promptUsed);
+        }
+      } else {
+        setComfyError(data.error || "ComfyUI failed to manifest scene.");
+      }
+    } catch (e) {
+      console.error("Failed to generate ComfyUI artwork:", e);
+      setComfyError("Unable to reach ComfyUI server.");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!comfyAvailable || !autoPaint || isGenerating) return;
+    if (lastAutoKeyRef.current === sceneSyncKey) return;
+    lastAutoKeyRef.current = sceneSyncKey;
+    void handleGenerateArtwork();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [comfyAvailable, autoPaint, sceneSyncKey]);
+
+
 
   let primaryArtwork = SCENE_BACKDROPS[sceneBackdrop] ?? SCENE_BACKDROPS.corridor;
   let tierLabel = "";
@@ -252,28 +296,50 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
     <section className="relative rounded-xl overflow-hidden border border-white/10 bg-[#12131a] shadow-2xl">
       {/* Main Scene Backdrop / Tiered Battle Artwork */}
       <div className="relative h-64 sm:h-80 w-full overflow-hidden">
-        <img
-          src={comfyArtwork || primaryArtwork}
-          alt={
-            companionMoment
-              ? companionMoment.pose
-              : isBattle && activeHunter
-              ? `${activeHunter.name} — ${tierLabel}`
-              : roomName
-          }
-          className="h-full w-full object-cover object-center transition-all duration-700"
-        />
+        {comfyArtwork ? (
+          <>
+            <img
+              src={comfyArtwork}
+              alt=""
+              aria-hidden="true"
+              className="absolute inset-0 h-full w-full object-cover object-center blur-xl scale-110 opacity-45"
+            />
+            <img
+              src={comfyArtwork}
+              alt={
+                companionMoment
+                  ? companionMoment.pose
+                  : isBattle && activeHunter
+                  ? `${activeHunter.name} — ${tierLabel}`
+                  : roomName
+              }
+              className="relative z-[1] h-full w-full object-contain object-center transition-all duration-700"
+            />
+          </>
+        ) : (
+          <img
+            src={primaryArtwork}
+            alt={
+              companionMoment
+                ? companionMoment.pose
+                : isBattle && activeHunter
+                ? `${activeHunter.name} — ${tierLabel}`
+                : roomName
+            }
+            className="h-full w-full object-cover object-center transition-all duration-700"
+          />
+        )}
 
-        <div className={`absolute inset-0 bg-gradient-to-t ${moodTint}`} />
-        <div className="absolute inset-0 bg-gradient-to-r from-[#0b0c10]/85 via-transparent to-[#0b0c10]/70" />
+        <div className={`absolute inset-0 z-[2] bg-gradient-to-t ${moodTint}`} />
+        <div className="absolute inset-0 z-[2] bg-gradient-to-r from-[#0b0c10]/85 via-transparent to-[#0b0c10]/70" />
 
         <canvas
           ref={canvasRef}
-          className="absolute inset-0 w-full h-full pointer-events-none"
+          className="absolute inset-0 z-[3] w-full h-full pointer-events-none"
         />
 
         {/* Top Header Badges */}
-        <div className="absolute top-3 left-3 right-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="absolute top-3 left-3 right-3 z-10 flex flex-wrap items-center justify-between gap-2">
           <div className="inline-flex items-center gap-2 rounded-lg bg-[#0b0c10]/80 backdrop-blur-md border border-white/15 px-3 py-1.5 text-xs">
             <DoorOpen className="w-3.5 h-3.5 text-rose-300" />
             <span className="font-display font-medium text-[#f2efe9]">
@@ -284,26 +350,51 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            {comfyAvailable && isBattle && activeHunter && (
-              <button
-                type="button"
-                onClick={handleGenerateArtwork}
-                disabled={isGenerating}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-pink-950/85 hover:bg-pink-900 border border-pink-400/50 px-2.5 py-1 text-[11px] font-mono text-pink-100 transition cursor-pointer disabled:opacity-60 shadow-lg shadow-pink-950/40"
-                title="Manifest live artwork via local ComfyUI instance"
-              >
-                {isGenerating ? (
-                  <>
-                    <Loader2 className="w-3 h-3 text-pink-300 animate-spin" />
-                    <span>Painting scene...</span>
-                  </>
-                ) : (
-                  <>
-                    <Palette className="w-3 h-3 text-pink-300" />
-                    <span>{comfyArtwork ? "Repaint Scene" : "Manifest Scene (ComfyUI)"}</span>
-                  </>
-                )}
-              </button>
+            {comfyAvailable && (
+              <div className="inline-flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={handleGenerateArtwork}
+                  disabled={isGenerating}
+                  className="inline-flex items-center gap-1.5 rounded-lg bg-pink-950/85 hover:bg-pink-900 border border-pink-400/50 px-2.5 py-1 text-[11px] font-mono text-pink-100 transition cursor-pointer disabled:opacity-60 shadow-lg shadow-pink-950/40"
+                  title={
+                    comfyPromptUsed
+                      ? `Synced prompt: ${comfyPromptUsed}`
+                      : visualPrompt
+                      ? `Next prompt: ${visualPrompt}`
+                      : "Manifest synced scene via local ComfyUI instance"
+                  }
+                >
+                  {isGenerating ? (
+                    <>
+                      <Loader2 className="w-3 h-3 text-pink-300 animate-spin" />
+                      <span>Painting scene...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Palette className="w-3 h-3 text-pink-300" />
+                      <span>{comfyArtwork ? "Repaint Scene" : "Manifest Scene"}</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setAutoPaint((v) => !v)}
+                  className={`rounded-lg border px-2 py-1 text-[10px] font-mono transition cursor-pointer ${
+                    autoPaint
+                      ? "bg-emerald-950/85 border-emerald-400/50 text-emerald-200"
+                      : "bg-[#0b0c10]/80 border-white/15 text-[#f2efe9]/65 hover:text-[#f2efe9]"
+                  }`}
+                  title="Automatically paint each turn's synced scene with ComfyUI"
+                >
+                  Auto {autoPaint ? "ON" : "OFF"}
+                </button>
+              </div>
+            )}
+            {comfyError && (
+              <span className="rounded-lg bg-red-950/85 border border-red-400/40 px-2 py-1 text-[10px] font-mono text-red-200">
+                {comfyError}
+              </span>
             )}
             {tierLabel && (
               <span className="inline-flex items-center gap-1.5 rounded-lg bg-rose-950/85 border border-rose-400/45 px-2.5 py-1 text-[11px] font-mono text-rose-100">
@@ -320,7 +411,7 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
         </div>
 
         {/* Bottom Overlay: Protagonist + Hunter / Companion Moment */}
-        <div className="absolute bottom-3 left-3 right-3 flex flex-col sm:flex-row sm:items-end justify-between gap-3">
+        <div className="absolute bottom-3 left-3 right-3 z-10 flex flex-col sm:flex-row sm:items-end justify-between gap-3">
           {/* Scene Caption + Pose */}
           <div className="max-w-xl space-y-1.5">
             {companionMoment ? (

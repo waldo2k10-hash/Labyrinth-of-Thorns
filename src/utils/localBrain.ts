@@ -318,6 +318,7 @@ export async function generateNpcReplyWithLocalBrain(params: {
       protagonistDmText: { type: "string" },
       embracePose: { type: "string" },
       sceneCaption: { type: "string" },
+      visualPrompt: { type: "string" },
     },
     required: [
       "hunterDialogue",
@@ -325,6 +326,7 @@ export async function generateNpcReplyWithLocalBrain(params: {
       "protagonistDmText",
       "embracePose",
       "sceneCaption",
+      "visualPrompt",
     ],
     additionalProperties: false,
   };
@@ -335,6 +337,7 @@ Never decide or narrate ${protagonistName}'s future choices—only narrate senso
 
   const userPrompt = `NPC Persona:
 - Name: ${hunter.name} (${hunter.species}, ${hunter.desireArchetype})
+- Visual Traits: ${hunter.visualTraits}
 - Personality: ${hunter.personality}
 - Style: ${hunter.huntingStyle}
 - Current Disposition: ${baseOutcome.newDisposition} · Affinity: ${hunter.affinity}/100
@@ -344,7 +347,7 @@ Never decide or narrate ${protagonistName}'s future choices—only narrate senso
 - Player Command (${actionIntent}): "${playerAction}"
 - Mechanical Outcome Hint: ${baseOutcome.skillCheckSummary} (Battle Ended: ${baseOutcome.battleEnded ?? "none"}, Suggested Pose: ${baseOutcome.embracePose || "None"})
 
-Write ${hunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentence physical/atmospheric action summary ("hunterActionSummary"), a short vivid narration of the moment ("protagonistDmText"), the PG-13 embrace/kiss pose name if close ("embracePose", or "None"), and a 1-sentence visual caption ("sceneCaption").`;
+Write ${hunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentence physical/atmospheric action summary ("hunterActionSummary"), a short vivid narration of the moment ("protagonistDmText"), the PG-13 embrace/kiss pose name if close ("embracePose", or "None"), a 1-sentence visual caption ("sceneCaption"), and a comma-separated Stable Diffusion image prompt ("visualPrompt", 15-30 visual tags describing ${hunter.name}'s look, exact pose/distance, expression, setting, and lighting with zero UI stats).`;
 
   const parsed = await chatJsonWithLmStudio(
     config,
@@ -380,6 +383,10 @@ Write ${hunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentence phys
       typeof parsed.sceneCaption === "string" && parsed.sceneCaption.trim()
         ? parsed.sceneCaption.trim()
         : baseOutcome.sceneCaption,
+    visualPrompt:
+      typeof parsed.visualPrompt === "string" && parsed.visualPrompt.trim()
+        ? parsed.visualPrompt.trim()
+        : baseOutcome.visualPrompt,
   };
 }
 
@@ -450,6 +457,7 @@ export async function runFullTurnWithLocalBrain(params: {
         enum: ["mist", "petals", "embers", "spores"],
       },
       sceneCaption: { type: "string" },
+      visualPrompt: { type: "string" },
       battleEnded: {
         type: "string",
         enum: ["none", "escaped", "outwitted", "charmed"],
@@ -475,6 +483,7 @@ export async function runFullTurnWithLocalBrain(params: {
       "entityStance",
       "visualEffect",
       "sceneCaption",
+      "visualPrompt",
       "battleEnded",
       "intoxicationDelta",
       "tetherDelta",
@@ -494,7 +503,7 @@ Room: ${tile.examined ? tile.roomName : `${tile.doorLabel} (Closed)`} (Backdrop:
 Stats: Intoxication ${stats.intoxication}/100, Tether ${stats.tether}/100, Selfhood ${stats.selfhood}/${stats.maxSelfhood}, Hesitation ${stats.hesitation}/100
 ${
   activeHunter
-    ? `Active Monster Girl: ${activeHunter.name}, ${activeHunter.title} (${activeHunter.species}, ${activeHunter.personality}, Disposition: ${activeHunter.disposition}, Affinity: ${activeHunter.affinity}/100)${
+    ? `Active Monster Girl: ${activeHunter.name}, ${activeHunter.title} (${activeHunter.species}, Traits: ${activeHunter.visualTraits}, ${activeHunter.personality}, Disposition: ${activeHunter.disposition}, Affinity: ${activeHunter.affinity}/100)${
         rivalHunter ? ` | Rival Nearby: ${rivalHunter.name}` : ""
       }`
     : "No monster girl face-to-face."
@@ -507,7 +516,8 @@ ${
     : actionIntent === "wait"
     ? "Player yielded initiative: she steps into an embrace or kiss pose."
     : ""
-}`;
+}
+Also generate "visualPrompt": 15-30 comma-separated Stable Diffusion tags for ComfyUI depicting the exact current scene (subject/species traits if in battle or atmospheric empty chamber if exploring, exact pose/stance, expression, room architecture, lightingMood, and particle effects; no numbers or UI terms).`;
 
   const parsed = await chatJsonWithLmStudio(
     config,
@@ -557,6 +567,10 @@ ${
     sceneCaption: String(
       parsed.sceneCaption || `Soft rose haze drifts around ${tile.roomName}.`
     ),
+    visualPrompt:
+      typeof parsed.visualPrompt === "string" && parsed.visualPrompt.trim()
+        ? parsed.visualPrompt.trim()
+        : undefined,
     battleEnded:
       isBattle && tileEvent !== "ambush_start"
         ? ((parsed.battleEnded as TurnOutcomeResponse["battleEnded"]) || "none")

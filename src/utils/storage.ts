@@ -40,6 +40,7 @@ export interface SavedRunSnapshot {
   entityStance: EntityStance;
   visualEffect: VisualEffect;
   sceneCaption: string;
+  visualPrompt?: string;
   charmedCompanions: CharmedCompanion[];
   seenHunterNames: string[];
 }

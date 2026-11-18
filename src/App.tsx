@@ -264,6 +264,9 @@ function buildFallbackTurnOutcome(params: {
     sceneCaption: isBattle
       ? `${hunterName} lingers inside ${tile.roomName} amidst warm rose mist.`
       : `Rose haze drifts softly through ${tile.roomName}.`,
+    visualPrompt: isBattle
+      ? `1girl, ${targetHunter?.species ?? "monster girl"}, ${targetHunter?.visualTraits ?? ""}, ${tile.backdrop}, ${actionIntent === "reciprocate" ? "intimate kiss embrace" : "leaning close"}, candlelit rose shadows`
+      : `no humans, uninhabited gothic ${tile.backdrop}, ${tile.roomName}, violet mist, flickering candlelight`,
     battleEnded:
       isBattle && tileEvent !== "ambush_start" && actionIntent === "reciprocate"
         ? "charmed"
@@ -331,6 +334,7 @@ export function App() {
   const [sceneCaption, setSceneCaption] = useState(
     "Violet mist curls quietly around candlelit doorways."
   );
+  const [lastVisualPrompt, setLastVisualPrompt] = useState("");
 
   const [lastEmbracePose, setLastEmbracePose] = useState("");
   const [lastIntimacyContact, setLastIntimacyContact] = useState<"none" | "soft" | "deep">("none");
@@ -346,6 +350,7 @@ export function App() {
   const [savedRun, setSavedRun] = useState(() => loadSavedRun());
 
   const turnLockRef = useRef(false);
+  const shownAiNoticeRef = useRef(false);
 
   const activeHunter = useMemo(
     () => hunters.find((h) => h.id === activeBattleHunterId) ?? null,
@@ -522,6 +527,7 @@ export function App() {
       entityStance,
       visualEffect,
       sceneCaption,
+      visualPrompt: lastVisualPrompt,
       charmedCompanions,
       seenHunterNames,
     };
@@ -546,6 +552,7 @@ export function App() {
     entityStance,
     visualEffect,
     sceneCaption,
+    lastVisualPrompt,
     charmedCompanions,
     seenHunterNames,
   ]);
@@ -643,6 +650,9 @@ export function App() {
         setEntityStance("distant");
         setVisualEffect("mist");
         setSceneCaption(`Mist curls across ${startTile.roomName} as Ket surveys the sector.`);
+        setLastVisualPrompt(
+          `no humans, gothic ${startTile.backdrop}, ${startTile.roomName}, violet mist, flickering candlelight`
+        );
         setSeenHunterNames((prev) => [
           ...prev,
           ...spawnedHunters.map((h) => h.name),
@@ -656,10 +666,27 @@ export function App() {
           turn: currentStats.turn,
         };
 
+        const entriesToAdd: Omit<ChronicleEntry, "id">[] = [openingEntry];
+        if (data.aiNotice && !shownAiNoticeRef.current) {
+          shownAiNoticeRef.current = true;
+          entriesToAdd.push({
+            speaker: "system",
+            speakerName: "AI Engine",
+            text: data.aiNotice,
+            turn: currentStats.turn,
+          });
+        }
+
         if (resetChronicle) {
-          setChronicle([{ ...openingEntry, id: `ch-init-${Date.now()}` }]);
+          shownAiNoticeRef.current = Boolean(data.aiNotice);
+          setChronicle(
+            entriesToAdd.map((entry, idx) => ({
+              ...entry,
+              id: `ch-init-${Date.now()}-${idx}`,
+            }))
+          );
         } else {
-          pushChronicle([openingEntry]);
+          pushChronicle(entriesToAdd);
         }
       } finally {
         setLoading(false);
@@ -728,6 +755,7 @@ export function App() {
     setEntityStance(snap.entityStance);
     setVisualEffect(snap.visualEffect);
     setSceneCaption(snap.sceneCaption);
+    setLastVisualPrompt(snap.visualPrompt ?? "");
     setCharmedCompanions(snap.charmedCompanions ?? []);
     setSeenHunterNames(snap.seenHunterNames ?? []);
     setEndingDetails(null);
@@ -1026,6 +1054,16 @@ export function App() {
           });
         }
 
+        if (data.aiNotice && !shownAiNoticeRef.current) {
+          shownAiNoticeRef.current = true;
+          newLogs.push({
+            speaker: "system",
+            speakerName: "AI Engine",
+            text: data.aiNotice,
+            turn: nextStats.turn,
+          });
+        }
+
         pushChronicle(newLogs);
 
         setStats(nextStats);
@@ -1042,6 +1080,7 @@ export function App() {
         setEntityStance(data.entityStance);
         setVisualEffect(data.visualEffect);
         setSceneCaption(data.sceneCaption);
+        setLastVisualPrompt(data.visualPrompt ?? "");
         setChoices(data.choices?.length ? data.choices : DEFAULT_CHOICES);
 
         // Check Assimilation / Dissolution Game Over
@@ -1141,6 +1180,11 @@ export function App() {
         landedTile.examined
           ? `Ket steps into ${landedTile.roomName}.`
           : `Ket stands outside the closed ${landedTile.doorLabel}. Listen [L] or Open [E].`
+      );
+      setLastVisualPrompt(
+        landedTile.examined
+          ? `no humans, gothic ${landedTile.backdrop}, ${landedTile.roomName}, soft violet mist, flickering wall sconces`
+          : `no humans, closed ${landedTile.doorLabel}, shadowy gothic corridor, lavender floor mist`
       );
 
       if (collidingHunter && !isClosedDoorThreshold) {
@@ -1698,6 +1742,9 @@ export function App() {
           pose,
           caption: `${comp.name} draws Ket close for a tender ${pose}, warming his reality Tether without letting the Void's haze overwhelm him.`,
         });
+        setLastVisualPrompt(
+          `1girl and 1boy, ${comp.species}, ${pose}, tender protective embrace, candlelit sanctuary, rose petals`
+        );
         setCompendium((prev) =>
           recordCompendiumDiscovery(prev, {
             archetype: comp.archetype,
@@ -1937,6 +1984,8 @@ export function App() {
             entityStance={entityStance}
             visualEffect={visualEffect}
             sceneCaption={sceneCaption}
+            visualPrompt={lastVisualPrompt}
+            turn={stats.turn}
             gameMode={gameMode}
             activeHunter={activeHunter}
             rivalHunter={rivalHunter}

@@ -1,7 +1,5 @@
 import React, { useEffect, useState } from "react";
 import { Play, Sparkles, Compass, Heart, BookOpen, RotateCcw, Cpu, Palette } from "lucide-react";
-import React from "react";
-import { Play, Sparkles, Compass, Heart, BookOpen, RotateCcw, Cpu } from "lucide-react";
 import { TITLE_KEY_ART } from "../utils/portraits";
 import type { DifficultyMode } from "../types/game";
 import { DIFFICULTY_CONFIG } from "../utils/tactics";

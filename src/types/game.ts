@@ -204,6 +204,7 @@ export interface InitSessionResponse {
   protagonistOpening: string;
   hunters: Omit<MonsterGirlNPC, 'row' | 'col' | 'stunnedTurns' | 'spokenMemory'>[];
   choices: TacticalChoice[];
+  aiNotice?: string;
 }
 
 export interface TurnOutcomeResponse {
@@ -219,6 +220,8 @@ export interface TurnOutcomeResponse {
   entityStance: EntityStance;
   visualEffect: VisualEffect;
   sceneCaption: string;
+  visualPrompt?: string;
+  aiNotice?: string;
   battleEnded?: 'none' | 'escaped' | 'outwitted' | 'charmed';
   intoxicationDelta: number;
   tetherDelta: number;

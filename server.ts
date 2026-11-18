@@ -1,16 +1,29 @@
 import "dotenv/config";
 import express from "express";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { GoogleGenAI, ThinkingLevel, Type } from "@google/genai";
 import { GAME_LORE_CONTEXT } from "./src/lore.ts";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = Number(process.env.PORT) || 3000;
 
+const ai = new GoogleGenAI({
+  apiKey: process.env.GEMINI_API_KEY,
+  httpOptions: {
+    headers: {
+      "User-Agent": "aistudio-build",
+    },
+  },
+});
+
+const MODEL_NAME = "gemini-4-hydrogen";
+
 // LOCAL LLM / NEMOTRON CONFIGURATION (OpenAI-compatible)
-const TOKENREPLY_API_URL = "http://localhost:1234/v1/chat/completions";
-const TOKENREPLY_API_KEY = "lm-studio";
-const TOKENREPLY_MODEL = "llama-3.1-nemotron-8b-ultralong-4m-instruct";
+const LOCAL_LLM_API_URL = process.env.LM_STUDIO_URL?.trim() || "http://localhost:1234/v1/chat/completions";
+const LOCAL_LLM_API_KEY = process.env.LM_STUDIO_API_KEY?.trim() || "lm-studio";
+const LOCAL_LLM_MODEL = process.env.LM_STUDIO_MODEL?.trim() || "llama-3.1-nemotron-8b-ultralong-4m-instruct";
 
 // COMFYUI CONFIGURATION
 const COMFYUI_URL = process.env.COMFYUI_URL || "http://127.0.0.1:8188";
@@ -49,14 +62,14 @@ async function askTheVoid<T>(
       ? `\nPlayer State: Tether ${playerStats.tether ?? 100}/100, Ego ${playerStats.ego ?? 100}/100, Intoxication ${playerStats.intoxication ?? 0}/100.`
       : "";
 
-    const response = await fetch(TOKENREPLY_API_URL, {
+    const response = await fetch(LOCAL_LLM_API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${TOKENREPLY_API_KEY}`,
+        "Authorization": `Bearer ${LOCAL_LLM_API_KEY}`,
       },
       body: JSON.stringify({
-        model: TOKENREPLY_MODEL,
+        model: LOCAL_LLM_MODEL,
         messages: [
           { role: "system", content: systemContext + statsStr },
           { role: "user", content: prompt },
@@ -83,7 +96,7 @@ async function askTheVoid<T>(
     try {
       // Try to parse it as JSON first
       aiResponse = JSON.parse(text);
-    } catch (e) {
+    } catch {
       // If it's NOT JSON (it's just a sentence), fallback to object structure
       aiResponse = {
         narration: text,
@@ -117,17 +130,17 @@ async function askTheVoid<T>(
 // AI Response Generator for status check
 async function generateAIResponse(prompt: string): Promise<string> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120000);
+  const timeoutId = setTimeout(() => controller.abort(), 3000);
 
   try {
-    const response = await fetch(TOKENREPLY_API_URL, {
+    const response = await fetch(LOCAL_LLM_API_URL, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "Authorization": `Bearer ${TOKENREPLY_API_KEY}`,
+        "Authorization": `Bearer ${LOCAL_LLM_API_KEY}`,
       },
       body: JSON.stringify({
-        model: TOKENREPLY_MODEL,
+        model: LOCAL_LLM_MODEL,
         messages: [
           {
             role: "system",
@@ -150,41 +163,295 @@ async function generateAIResponse(prompt: string): Promise<string> {
     let text = (data.choices?.[0]?.message?.content ?? "").trim();
     text = text.replace(/<\|channel>[\s\S]*?<channel\|>/g, "").trim();
     return text || "The Void listens in silence.";
-  } catch (error) {
-    console.error("LocalLLM Connection Error:", error);
-    return "The Void whispers from within the shadows...";
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-// Generate an image via the local ComfyUI API
+interface ComfyScenePromptInput {
+  prompt?: string;
+  sceneCaption?: string;
+  archetype?: string;
+  species?: string;
+  hunterName?: string;
+  visualTraits?: string;
+  disposition?: string;
+  stage?: string;
+  embracePose?: string;
+  intimacyContact?: string;
+  entityStance?: string;
+  sceneBackdrop?: string;
+  lightingMood?: string;
+  visualEffect?: string;
+  roomName?: string;
+  intoxication?: number;
+  isBattle?: boolean;
+}
+
+const ARCHETYPE_COMFY_TAGS: Record<string, string> = {
+  alraune: "alraune monster girl, crimson rose petals in hair, thorny vines, glowing emerald eyes",
+  arachne: "arachne monster girl, spider legs silhouette, silver silk threads, gothic lace corset",
+  lamia: "lamia monster girl, iridescent crimson serpent tail coils, gold collar, slit-pupil eyes",
+  succubus: "succubus monster girl, curved obsidian horns, bat wings, gothic lace dress, glowing rose eyes",
+  moth: "mothkin monster girl, luminous velvet moth wings, feathered antennae, twilight cloak",
+  slime: "slime spirit monster girl, translucent glowing violet-blue body, shimmering tendrils",
+  fungal: "mycelial dryad monster girl, glowing twilight mushroom cap, spore veil, pale skin",
+};
+
+const BACKDROP_COMFY_TAGS: Record<string, string> = {
+  bedroom: "gothic boudoir, velvet canopy bed, silk drapes",
+  conservatory: "overgrown gothic glass conservatory, nocturnal orchids, moonlight",
+  sanctuary: "moonlit silver shrine, starlit water basin, obsidian arches",
+  corridor: "gothic stone corridor, velvet curtains, tall archways",
+};
+
+const LIGHTING_COMFY_TAGS: Record<string, string> = {
+  candlelit_rose: "warm candlelight, crimson rose-gold rim lighting",
+  overload_haze: "rose-magenta neon mist, dreamy soft bloom",
+  sanctuary_silver: "cool silver moonlight, slate-blue shadows",
+  violet_mist: "deep violet glow, volumetric lavender fog",
+};
+
+const EFFECT_COMFY_TAGS: Record<string, string> = {
+  petals: "floating crimson rose petals",
+  embers: "drifting golden candle embers",
+  spores: "glowing bioluminescent spores",
+  mist: "swirling lavender mist",
+};
+
+function sanitizeComfyFragment(raw: unknown, maxLen = 220): string {
+  if (typeof raw !== "string") return "";
+  return raw
+    .replace(/[\r\n]+/g, ", ")
+    .replace(/[{}[\]<>]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, maxLen);
+}
+
+function buildComfyScenePrompt(input: ComfyScenePromptInput): string {
+  const parts: string[] = [
+    "masterpiece, highly detailed, gothic fantasy, beautiful anime portrait",
+  ];
+
+  const isBattle = Boolean(input.isBattle);
+  const archKey = String(input.archetype || "").toLowerCase();
+  const stageKey = String(input.stage || "").toLowerCase();
+  const backdropKey = String(input.sceneBackdrop || "corridor").toLowerCase();
+  const moodKey = String(input.lightingMood || "violet_mist").toLowerCase();
+  const effectKey = String(input.visualEffect || "mist").toLowerCase();
+  const embracePose = sanitizeComfyFragment(input.embracePose, 50);
+  const aiVisualPrompt = sanitizeComfyFragment(input.prompt, 180);
+
+  if (isBattle || archKey) {
+    if (stageKey === "kiss" || embracePose.toLowerCase().includes("kiss")) {
+      parts.push("1girl and 1boy, romantic kiss, close embrace, flushed cheeks, dark-haired boy in gray hoodie");
+    } else if (stageKey === "deep" || input.intimacyContact === "deep" || input.entityStance === "embrace") {
+      parts.push("1girl and 1boy, intimate embrace, dark-haired boy in gray hoodie, intense eye contact");
+    } else if (stageKey === "close" || input.intimacyContact === "soft" || input.entityStance === "close") {
+      parts.push("1girl, leaning close, alluring gaze, parted lips");
+    } else {
+      parts.push("1girl, ethereal glowing eyes, poised at doorway threshold");
+    }
+
+    if (ARCHETYPE_COMFY_TAGS[archKey]) {
+      parts.push(ARCHETYPE_COMFY_TAGS[archKey]);
+    } else if (input.species) {
+      parts.push(sanitizeComfyFragment(input.species, 60));
+    }
+
+    if (embracePose && embracePose.toLowerCase() !== "none") {
+      parts.push(embracePose);
+    }
+
+    const disp = String(input.disposition || "").toLowerCase();
+    if (disp === "charmed") parts.push("warm loving gaze, soft blush");
+    else if (disp === "hungry") parts.push("predatory smirk, glowing eyes");
+    else if (disp === "amused") parts.push("teasing smirk");
+    else if (disp === "wary" || disp === "cornered") parts.push("guarded glance");
+  } else {
+    parts.push("no humans, uninhabited atmospheric gothic interior");
+  }
+
+  if (aiVisualPrompt) {
+    // Strip redundant quality headers if the AI already included them
+    const cleanedAi = aiVisualPrompt
+      .replace(/masterpiece|best quality|highly detailed/gi, "")
+      .replace(/^[\s,]+|[\s,]+$/g, "");
+    if (cleanedAi) parts.push(cleanedAi);
+  } else {
+    const traits = sanitizeComfyFragment(input.visualTraits, 90);
+    if (traits) parts.push(traits);
+    parts.push(BACKDROP_COMFY_TAGS[backdropKey] || BACKDROP_COMFY_TAGS.corridor);
+    parts.push(LIGHTING_COMFY_TAGS[moodKey] || LIGHTING_COMFY_TAGS.violet_mist);
+    parts.push(EFFECT_COMFY_TAGS[effectKey] || EFFECT_COMFY_TAGS.mist);
+  }
+
+  if (typeof input.intoxication === "number" && input.intoxication >= 75) {
+    parts.push("dreamy hypnotic haze");
+  }
+
+  return parts.filter(Boolean).join(", ");
+}
+
+const DEFAULT_COMFY_NEGATIVE =
+  "worst quality, low quality, blurry, deformed hands, extra fingers, bad anatomy, text, watermark, signature";
+
+const SAVE_API_FORMAT_FALLBACK: Record<string, any> = {
+  "1": {
+    inputs: { ckpt_name: "StableMondAI-SDG.safetensors" },
+    class_type: "CheckpointLoaderSimple",
+  },
+  "2": {
+    inputs: {
+      seed: 0,
+      steps: 20,
+      cfg: 7,
+      sampler_name: "euler",
+      scheduler: "simple",
+      denoise: 1,
+      model: ["1", 0],
+      positive: ["3", 0],
+      negative: ["5", 0],
+      latent_image: ["4", 0],
+    },
+    class_type: "KSampler",
+  },
+  "3": {
+    inputs: {
+      text: "masterpiece, highly detailed, 1girl, gothic fantasy, ethereal glowing eyes, beautiful anime portrait",
+      clip: ["1", 1],
+    },
+    class_type: "CLIPTextEncode",
+  },
+  "4": {
+    inputs: { width: 512, height: 768, batch_size: 1 },
+    class_type: "EmptyLatentImage",
+  },
+  "5": {
+    inputs: {
+      text: DEFAULT_COMFY_NEGATIVE,
+      clip: ["1", 1],
+    },
+    class_type: "CLIPTextEncode",
+  },
+  "8": {
+    inputs: { samples: ["2", 0], vae: ["1", 2] },
+    class_type: "VAEDecode",
+  },
+  "10": {
+    inputs: { filename_prefix: "Labyrinth", images: ["8", 0] },
+    class_type: "SaveImage",
+  },
+};
+
+function loadComfyWorkflowTemplate(): Record<string, any> {
+  try {
+    const workflowPath = path.resolve(__dirname, "Save (API Format).json");
+    const raw = fs.readFileSync(workflowPath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, any>;
+    if (parsed && typeof parsed === "object" && parsed["1"] && parsed["2"]) {
+      return parsed;
+    }
+  } catch {
+    // Fall back to embedded copy matching Save (API Format).json
+  }
+  return structuredClone(SAVE_API_FORMAT_FALLBACK);
+}
+
+interface ComfyGenerateOptions {
+  negativeText?: string;
+  width?: number;
+  height?: number;
+  steps?: number;
+  cfg?: number;
+  filenamePrefix?: string;
+}
+
+// Generate an image via the local ComfyUI API using Save (API Format).json
 async function generateComfyImage(
   promptText: string,
-  negativeText = "ugly, deformed, noisy, blurry, low contrast, bad anatomy, extra fingers, mutated hands, poorly drawn face, mutation, deformed, blurry, bad proportions, gross proportions, cloned face, text, watermark, logo, cartoon, 3d render, anime"
-): Promise<{ filename: string; url: string }> {
-  const seductiveKeywords = "sensual, seductive, alluring gaze, suggestive pose, detailed skin, high detail eyes, dim atmospheric candlelight, silk and lace, bedroom eyes, smirking, suggestive clothing, hyper-realistic, 8k, masterpiece";
-  const enhancedPrompt = `${seductiveKeywords}, Dark fantasy, Labyrinth of Thorns, ${promptText.substring(0, 300)}`;
-  
-  console.log(`[ComfyUI] Attempting to manifest with StableMondAI (Optimized for RTX 2080): ${enhancedPrompt.substring(0, 80)}...`);
+  optionsOrNegative?: string | ComfyGenerateOptions
+): Promise<{ filename: string; url: string; promptUsed: string }> {
+  const opts: ComfyGenerateOptions =
+    typeof optionsOrNegative === "string"
+      ? { negativeText: optionsOrNegative }
+      : optionsOrNegative ?? {};
 
-  const seed = Math.floor(Math.random() * 1000000);
-  const workflow = {
-    "3": { "class_type": "KSampler", "inputs": { "seed": seed, "steps": 15, "cfg": 7, "sampler_name": "euler", "scheduler": "normal", "denoise": 1, "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0] } },
-    "4": { "class_type": "CheckpointLoaderSimple", "inputs": { "ckpt_name": "StableMondAI-SDG.safetensors" } },
-    "5": { "class_type": "EmptyLatentImage", "inputs": { "width": 512, "height": 512, "batch_size": 1 } },
-    "6": { "class_type": "CLIPTextEncode", "inputs": { "text": enhancedPrompt, "clip": ["4", 1] } },
-    "7": { "class_type": "CLIPTextEncode", "inputs": { "text": negativeText, "clip": ["4", 1] } },
-    "8": { "class_type": "VAEDecode", "inputs": { "samples": ["3", 0], "vae": ["4", 2] } },
-    "9": { "class_type": "SaveImage", "inputs": { "filename_prefix": "Labyrinth_Game", "images": ["8", 0] } },
-  };
+  const workflow = loadComfyWorkflowTemplate();
+  const seed = Math.floor(Math.random() * 1000000000);
+
+  // Locate KSampler, Positive CLIPTextEncode, Negative CLIPTextEncode, EmptyLatentImage
+  const samplerEntry = Object.entries(workflow).find(
+    ([, node]) => node?.class_type === "KSampler"
+  );
+  const samplerNode = samplerEntry?.[1];
+  const posNodeId = Array.isArray(samplerNode?.inputs?.positive)
+    ? String(samplerNode.inputs.positive[0])
+    : "3";
+  const negNodeId = Array.isArray(samplerNode?.inputs?.negative)
+    ? String(samplerNode.inputs.negative[0])
+    : "5";
+  const latentNodeId = Array.isArray(samplerNode?.inputs?.latent_image)
+    ? String(samplerNode.inputs.latent_image[0])
+    : "4";
+
+  const positivePrompt =
+    sanitizeComfyFragment(promptText, 700) ||
+    String(
+      workflow[posNodeId]?.inputs?.text ||
+        "masterpiece, highly detailed, 1girl, gothic fantasy, ethereal glowing eyes, beautiful anime portrait"
+    );
+  const negativePrompt =
+    opts.negativeText?.trim() ||
+    String(workflow[negNodeId]?.inputs?.text || DEFAULT_COMFY_NEGATIVE);
+
+  if (samplerNode?.inputs) {
+    samplerNode.inputs.seed = seed;
+    if (typeof opts.steps === "number") samplerNode.inputs.steps = opts.steps;
+    if (typeof opts.cfg === "number") samplerNode.inputs.cfg = opts.cfg;
+  }
+  if (workflow[posNodeId]?.inputs) {
+    workflow[posNodeId].inputs.text = positivePrompt;
+  }
+  if (workflow[negNodeId]?.inputs) {
+    workflow[negNodeId].inputs.text = negativePrompt;
+  }
+  if (workflow[latentNodeId]?.inputs) {
+    if (typeof opts.width === "number") workflow[latentNodeId].inputs.width = opts.width;
+    if (typeof opts.height === "number") workflow[latentNodeId].inputs.height = opts.height;
+  }
+  if (opts.filenamePrefix) {
+    const saveEntry = Object.entries(workflow).find(
+      ([, node]) => node?.class_type === "SaveImage"
+    );
+    if (saveEntry?.[1]?.inputs) {
+      saveEntry[1].inputs.filename_prefix = opts.filenamePrefix;
+    }
+  }
+
+  const latentW = workflow[latentNodeId]?.inputs?.width ?? 512;
+  const latentH = workflow[latentNodeId]?.inputs?.height ?? 768;
+  const samplerSteps = samplerNode?.inputs?.steps ?? 20;
+
+  console.log(
+    `[ComfyUI] Manifesting via Save (API Format).json (${latentW}x${latentH}, ${samplerSteps} steps): ${positivePrompt.substring(0, 110)}...`
+  );
 
   try {
-    const submitRes = await fetch(`${COMFYUI_URL}/prompt`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ prompt: workflow }),
-    });
+    const submitController = new AbortController();
+    const submitTimer = setTimeout(() => submitController.abort(), 10000);
+    let submitRes: Response;
+    try {
+      submitRes = await fetch(`${COMFYUI_URL}/prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: submitController.signal,
+        body: JSON.stringify({ prompt: workflow }),
+      });
+    } finally {
+      clearTimeout(submitTimer);
+    }
 
     if (!submitRes.ok) {
       const errorText = await submitRes.text();
@@ -199,20 +466,39 @@ async function generateComfyImage(
     console.log(`[ComfyUI] Prompt queued. ID: ${prompt_id}. Polling for image...`);
 
     const startTime = Date.now();
-    while (Date.now() - startTime < 60000) {
-      await new Promise((r) => setTimeout(r, 2000));
-      const histRes = await fetch(`${COMFYUI_URL}/history/${prompt_id}`);
+    while (Date.now() - startTime < 65000) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const histController = new AbortController();
+      const histTimer = setTimeout(() => histController.abort(), 5000);
+      let histRes: Response;
+      try {
+        histRes = await fetch(`${COMFYUI_URL}/history/${prompt_id}`, {
+          signal: histController.signal,
+        });
+      } finally {
+        clearTimeout(histTimer);
+      }
       if (histRes.ok) {
         const histData = (await histRes.json()) as Record<string, any>;
-        if (histData[prompt_id]?.outputs?.["9"]?.images?.[0]?.filename) {
-          const filename = histData[prompt_id].outputs["9"].images[0].filename;
-          console.log(`[ComfyUI] Success! Image manifested: ${filename}`);
-          return { filename, url: `/api/comfy/image/${encodeURIComponent(filename)}` };
+        const outputs = histData[prompt_id]?.outputs as Record<string, any> | undefined;
+        if (outputs) {
+          for (const nodeOut of Object.values(outputs)) {
+            const img = nodeOut?.images?.[0];
+            if (img?.filename) {
+              const filename = String(img.filename);
+              console.log(`[ComfyUI] Success! Image manifested: ${filename}`);
+              return {
+                filename,
+                url: `/api/comfy/image/${encodeURIComponent(filename)}`,
+                promptUsed: positivePrompt,
+              };
+            }
+          }
         }
       }
     }
 
-    throw new Error("ComfyUI image generation timed out after 60s");
+    throw new Error("ComfyUI image generation timed out after 65s");
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[ComfyUI] Critical Failure: ${message}`);
@@ -497,24 +783,70 @@ async function callOpenAiCompatibleJson(
   }
 }
 
+const GEMINI_FALLBACK_MODELS = [MODEL_NAME, "gemini-3.1-flash-lite"] as const;
+const geminiQuotaCooldownUntil: Record<string, number> = {};
+
+function createQuotaError(): Error & { status: number } {
+  const err = new Error("GEMINI_QUOTA_EXCEEDED") as Error & { status: number };
+  err.status = 429;
+  return err;
+}
+
 async function callGeminiJson(
   prompt: string,
   geminiSchema: Record<string, unknown>
 ): Promise<Record<string, unknown>> {
-  const response = await withRetry(() =>
-    ai.models.generateContent({
-      model: MODEL_NAME,
-      contents: prompt,
-      config: {
-        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+  const now = Date.now();
+  let lastError: unknown = null;
+
+  for (const candidateModel of GEMINI_FALLBACK_MODELS) {
+    const cooldownUntil = geminiQuotaCooldownUntil[candidateModel] ?? 0;
+    if (now < cooldownUntil) {
+      continue;
+    }
+
+    try {
+      const config: Record<string, unknown> = {
         responseMimeType: "application/json",
         responseSchema: geminiSchema,
-      },
-    })
-  );
+      };
+      if (candidateModel === MODEL_NAME) {
+        config.thinkingConfig = { thinkingLevel: ThinkingLevel.LOW };
+      }
 
-  const raw = (response.text ?? "{}").trim();
-  return extractJsonObject(raw);
+      const response = await withRetry(() =>
+        ai.models.generateContent({
+          model: candidateModel,
+          contents: prompt,
+          config,
+        })
+      );
+
+      const raw = (response.text ?? "{}").trim();
+      return extractJsonObject(raw);
+    } catch (err: unknown) {
+      lastError = err;
+      const { status, message } = extractErrorMessage(err);
+      if (isQuotaExceeded(status, message)) {
+        geminiQuotaCooldownUntil[candidateModel] = Date.now() + 10 * 60 * 1000;
+        console.info(
+          `[Gemini] Quota reached on ${candidateModel}; cooling down for 10m.`
+        );
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  if (lastError) {
+    const { status, message } = extractErrorMessage(lastError);
+    if (isQuotaExceeded(status, message)) {
+      throw createQuotaError();
+    }
+    throw lastError;
+  }
+
+  throw createQuotaError();
 }
 
 async function callBrainJson(
@@ -725,20 +1057,13 @@ Structure: { "narration": "...", "visual_prompt": "...", "impact": { "tether": 0
     }
   });
 
-  // ComfyUI Image Generation Route
+  // ComfyUI Image Generation Route (Synced with live game state + Save (API Format).json)
   app.post("/api/comfy/generate", async (req, res) => {
     try {
-      const {
-        prompt,
-        archetype = "succubus",
-        stage = "portrait",
-        visualTraits,
-      } = req.body ?? {};
+      const body = (req.body ?? {}) as ComfyScenePromptInput & { aspect?: "scene" | "portrait" };
+      const finalPrompt = buildComfyScenePrompt(body);
 
-      // Simplified prompt logic for debugging
-      const finalPrompt = prompt || `1girl, ${archetype}, gothic romance, euphoric void, masterpiece`;
-      
-      console.log(`[Server] Requesting image for: ${finalPrompt}`);
+      console.log(`[Server] ComfyUI synced prompt: ${finalPrompt}`);
       const result = await generateComfyImage(finalPrompt);
       res.json({ ok: true, ...result });
     } catch (err: any) {
@@ -828,40 +1153,6 @@ CONTENT & AGENCY GUIDELINES:
   3. intent "social" ([Social])
   4. intent "mental" ([Mental])`;
 
-      const schemaHint = `{
-  "floorTitle": "string",
-  "protagonistOpening": "string",
-  "hunters": [
-    {
-      "id": "string",
-      "name": "string",
-      "title": "string",
-      "species": "string",
-      "archetype": "arachne"|"lamia"|"succubus"|"moth"|"alraune"|"slime"|"fungal",
-      "desireArchetype": "Siren"|"Whisperer"|"Enveloper",
-      "npcRole": "Kindly Guide"|"Rival"|"Curious Scholar"|"Lone Survivor"|"Trickster",
-      "personality": "string",
-      "huntingStyle": "string",
-      "weakness": "string",
-      "visualTraits": "string",
-      "disposition": "Stalking"|"Amused"|"Hungry"|"Wary"|"Cornered"|"Charmed",
-      "alertness": number (20-80),
-      "affinity": number (0-30),
-      "lastLine": "string"
-    }
-  ],
-  "choices": [
-    { "id": "string", "label": "string", "intent": "physical"|"analytical"|"social"|"mental", "riskLabel": "string" }
-  ]
-}`;
-
-      let parsed: any;
-      try {
-        parsed = await askTheVoid<any>(prompt, schemaHint, {});
-      } catch (err) {
-        console.warn("AI session init failed, triggering procedural fallback:", err);
-        throw err;
-      }
       const initSchema = {
         type: Type.OBJECT,
         properties: {
@@ -968,7 +1259,13 @@ CONTENT & AGENCY GUIDELINES:
 
       res.json(parsed);
     } catch (err: any) {
-      console.warn("AI session init failed or timed out. Falling back to procedural engine:", err?.message || err);
+      const { status, message } = extractErrorMessage(err);
+      const quotaHit = isQuotaExceeded(status, message);
+      console.info(
+        quotaHit
+          ? "[Game] Init fallback: Gemini quota reached; using procedural sector generator."
+          : `[Game] Init fallback: ${message.slice(0, 140)}`
+      );
       const floorNum = Number(req.body?.floor ?? 1);
       const room = String(req.body?.roomName ?? "Fractured Threshold");
       const companions = Array.isArray(req.body?.charmedCompanions)
@@ -978,81 +1275,6 @@ CONTENT & AGENCY GUIDELINES:
         companions.length > 0
           ? ` A lingering trace of warmth left by ${companions[companions.length - 1]?.name ?? "a charmed companion"} hangs gently beside the threshold.`
           : "";
-    } catch (err) {
-      const { status, message } = extractErrorMessage(err);
-      if (
-        isQuotaExceeded(status, message) ||
-        status >= 400 ||
-        /abort|timeout|fetch|econn|network|tunnel|unavailable/i.test(message)
-      ) {
-        const floorNum = Number(req.body?.floor ?? 1);
-        const room = String(req.body?.roomName ?? "Fractured Threshold");
-        const companions = Array.isArray(req.body?.charmedCompanions)
-          ? (req.body.charmedCompanions as Array<{ name?: string }>)
-          : [];
-        const companionEchoLine =
-          companions.length > 0
-            ? ` A lingering trace of warmth left by ${companions[companions.length - 1]?.name ?? "a charmed companion"} hangs gently beside the threshold.`
-            : "";
-
-        const roster = [
-          {
-            id: `hunter-f${floorNum}-0-${Date.now()}`,
-            name: floorNum === 1 ? "Seraphina" : floorNum === 2 ? "Vespera" : "Sylvara",
-            title:
-              floorNum === 1
-                ? "Crimson Bloom Sovereign"
-                : floorNum === 2
-                ? "Velvet Canopy Weaver"
-                : "Obsidian Throne Keeper",
-            species:
-              floorNum === 1
-                ? "Crimson Alraune"
-                : floorNum === 2
-                ? "Arachne Weaver"
-                : "Obsidian Lamia",
-            archetype:
-              floorNum === 1 ? "alraune" : floorNum === 2 ? "arachne" : "lamia",
-            desireArchetype: floorNum === 1 ? "Siren" : "Enveloper",
-            npcRole: floorNum === 1 ? "Kindly Guide" : "Rival",
-            personality: "Velvet-voiced, intensely attentive, and protective of anyone who earns her grace",
-            huntingStyle: "Draws travelers closer through crimson petal-scent and enveloping velvet embraces",
-            weakness: "Sharp analytical reading of her rhythmic cadence and honest, unguarded banter",
-            visualTraits: "Flowing rose-crimson hair framed by thorny vines and velvet petals",
-            disposition: "Amused",
-            alertness: 48,
-            affinity: 10,
-            lastLine: "Easy now, wanderer. Let the petals catch your breath before you hurry away.",
-          },
-          {
-            id: `hunter-f${floorNum}-1-${Date.now()}`,
-            name: floorNum === 1 ? "Caelia" : floorNum === 2 ? "Nyxia" : "Undine",
-            title:
-              floorNum === 1
-                ? "Lantern Spore Dryad"
-                : floorNum === 2
-                ? "Moon-Wing Whisperer"
-                : "Crystal Tendril Spirit",
-            species:
-              floorNum === 1
-                ? "Twilight Mycelial Dryad"
-                : floorNum === 2
-                ? "Luminous Mothkin"
-                : "Crystal Slime Spirit",
-            archetype:
-              floorNum === 1 ? "fungal" : floorNum === 2 ? "moth" : "slime",
-            desireArchetype: "Whisperer",
-            npcRole: "Trickster",
-            personality: "Softly teasing, curious, fond of close quiet whispers and tender embraces",
-            huntingStyle: "Wraps intruders in bioluminescent mist and gentle cradling holds",
-            weakness: "Decisive physical agility and calm mental grounding on his Anchor cord",
-            visualTraits: "Pale bioluminescent cloak glowing softly against candlelit stone",
-            disposition: "Stalking",
-            alertness: 46,
-            affinity: 8,
-            lastLine: "You stepped right past my lantern spores—care to stay a heartbeat longer?",
-          },
-        ];
 
       const roster = [
         {
@@ -1132,6 +1354,12 @@ CONTENT & AGENCY GUIDELINES:
           { id: "c3", label: "Call softly into the rose-lit hall", intent: "social", riskLabel: "Social" },
           { id: "c4", label: "Steady your pulse around the Anchor cord", intent: "mental", riskLabel: "Mental" },
         ],
+        ...(isQuotaExceeded(extractErrorMessage(err).status, extractErrorMessage(err).message)
+          ? {
+              aiNotice:
+                "Gemini free-tier quota exceeded — using local procedural narration. Connect Google Colab in AI Brain or update your API key in Settings > Secrets for live AI.",
+            }
+          : {}),
       });
     }
   });
@@ -1297,6 +1525,7 @@ REAL-TIME VISUAL STAGE DIRECTORS:
 - "entityStance": if NOT in Seduction Battle, ALWAYS "distant"; if in battle, "embrace" for kisses/close holds, "close" for flirting/circling near, otherwise "threshold".
 - "visualEffect": "petals" (rose/alraune/boudoir/kisses), "embers" (warm candlelit/succubus), "spores" (conservatory/moth/fungal/hazardous), or "mist" (corridors/sanctuary).
 - "sceneCaption": 1 concise atmospheric sentence describing the scene right now (Atmospheric, no numbers).
+- "visualPrompt": 15-30 comma-separated Stable Diffusion / ComfyUI visual tags synchronized with this exact turn (include "1girl" + species features & visualTraits if in Seduction Battle or "no humans" atmospheric chamber if exploring, exact pose/distance matching embracePose and entityStance, expression matching newDisposition, environment matching sceneBackdrop, lighting matching lightingMood, and particle effects matching visualEffect; no stats or UI labels).
 
 MECHANICAL RULES:
 1. Dissolution Thresholds:
@@ -1309,46 +1538,6 @@ MECHANICAL RULES:
    - "haven": -16 to -24 intoxicationDelta, +14 to +20 tetherDelta, +14 to +20 selfhoodDelta, -15 hesitationDelta.
 3. "choices": Provide EXACTLY 4 suggested actions covering all 4 skill intents: physical, analytical, social, mental.`;
 
-      const turnSchemaHint = `{
-  "protagonistDmText": "string",
-  "hunterDialogue": "string",
-  "hunterActionSummary": "string",
-  "embracePose": "string",
-  "intimacyContact": "none"|"soft"|"deep",
-  "skillCheckSummary": "string",
-  "newDisposition": "Stalking"|"Amused"|"Hungry"|"Wary"|"Cornered"|"Charmed",
-  "sceneBackdrop": "bedroom"|"corridor"|"conservatory"|"sanctuary",
-  "lightingMood": "violet_mist"|"candlelit_rose"|"sanctuary_silver"|"overload_haze",
-  "entityStance": "distant"|"threshold"|"close"|"embrace",
-  "visualEffect": "mist"|"petals"|"embers"|"spores",
-  "sceneCaption": "string",
-  "battleEnded": "none"|"escaped"|"outwitted"|"charmed",
-  "state_updates": {
-    "intoxicationDelta": number,
-    "tetherDelta": number,
-    "selfhoodDelta": number
-  },
-  "mechanics": {
-    "skill_check": { "skill": "string", "difficulty": number },
-    "absorption": "none|minor|major",
-    "automatic_failure": boolean
-  },
-  "visuals": {
-    "generate_image": "string"
-  },
-  "choices": [
-    { "id": number, "text": "string", "archetype": "Physical"|"Analytical"|"Social"|"Mental" }
-  ]
-}`;
-
-      const parsed: any = await askTheVoid<any>(prompt, turnSchemaHint, {
-        tether,
-        ego: selfhood,
-        intoxication,
-      });
-
-      const rawIntoxDelta = Number(parsed.state_updates?.intoxicationDelta ?? parsed.intoxicationDelta ?? 0);
-      let intoxicationDelta = clamp(rawIntoxDelta, -28, 28);
       const turnSchema = {
         type: Type.OBJECT,
         properties: {
@@ -1364,6 +1553,7 @@ MECHANICAL RULES:
           entityStance: { type: Type.STRING, enum: [...ENTITY_STANCES] },
           visualEffect: { type: Type.STRING, enum: [...VISUAL_EFFECTS] },
           sceneCaption: { type: Type.STRING },
+          visualPrompt: { type: Type.STRING },
           battleEnded: { type: Type.STRING, enum: [...BATTLE_END_STATES] },
           intoxicationDelta: { type: Type.INTEGER },
           tetherDelta: { type: Type.INTEGER },
@@ -1399,6 +1589,7 @@ MECHANICAL RULES:
           "entityStance",
           "visualEffect",
           "sceneCaption",
+          "visualPrompt",
           "battleEnded",
           "intoxicationDelta",
           "tetherDelta",
@@ -1439,6 +1630,7 @@ MECHANICAL RULES:
               protagonistDmText: { type: Type.STRING },
               embracePose: { type: Type.STRING },
               sceneCaption: { type: Type.STRING },
+              visualPrompt: { type: Type.STRING },
             },
             required: [
               "hunterDialogue",
@@ -1446,11 +1638,13 @@ MECHANICAL RULES:
               "protagonistDmText",
               "embracePose",
               "sceneCaption",
+              "visualPrompt",
             ],
           };
           const npcSystemPrompt = `You are ${activeHunter.name}, ${activeHunter.title} (${activeHunter.species}), inside the PG-13 gothic romance RPG "The Euphoric Void". Keep all scenes romantic, sensory, atmospheric, and strictly non-explicit. Never decide ${protagonistName}'s future choices.`;
           const npcUserPrompt = `NPC Persona:
 - Name: ${activeHunter.name} (${activeHunter.species}, ${activeHunter.desireArchetype})
+- Visual Traits: ${activeHunter.visualTraits}
 - Personality: ${activeHunter.personality}
 - Style: ${activeHunter.huntingStyle}
 - Current Disposition: ${parsed.newDisposition ?? activeHunter.disposition} · Affinity: ${activeHunter.affinity}/100
@@ -1460,7 +1654,7 @@ MECHANICAL RULES:
 - Player Command (${actionIntent}): "${playerAction}"
 - Mechanical Outcome Hint: ${parsed.skillCheckSummary ?? "Contested"} (Battle Ended: ${parsed.battleEnded ?? "none"}, Suggested Pose: ${parsed.embracePose || "None"})
 
-Write ${activeHunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentence physical/atmospheric action summary ("hunterActionSummary"), a short vivid narration of the moment ("protagonistDmText"), the PG-13 embrace/kiss pose name if close ("embracePose", or "None"), and a 1-sentence visual caption ("sceneCaption").`;
+Write ${activeHunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentence physical/atmospheric action summary ("hunterActionSummary"), a short vivid narration of the moment ("protagonistDmText"), the PG-13 embrace/kiss pose name if close ("embracePose", or "None"), a 1-sentence visual caption ("sceneCaption"), and a comma-separated Stable Diffusion prompt ("visualPrompt", 15-30 visual tags matching her traits, exact pose, expression, and lighting).`;
 
           const npcOverlay = await callOpenAiCompatibleJson(
             npcOverlayTarget,
@@ -1499,12 +1693,18 @@ Write ${activeHunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentenc
           if (typeof npcOverlay.sceneCaption === "string" && npcOverlay.sceneCaption.trim()) {
             parsed.sceneCaption = npcOverlay.sceneCaption.trim();
           }
+          if (typeof npcOverlay.visualPrompt === "string" && npcOverlay.visualPrompt.trim()) {
+            parsed.visualPrompt = npcOverlay.visualPrompt.trim();
+          }
         } catch {
           // Keep Gemini mechanical/narration result if external NPC overlay fails
         }
       }
 
-      let intoxicationDelta = clamp(Number(parsed.intoxicationDelta ?? 0), -28, 28);
+      const rawIntoxDelta = Number(
+        parsed.state_updates?.intoxicationDelta ?? parsed.intoxicationDelta ?? 0
+      );
+      let intoxicationDelta = clamp(rawIntoxDelta, -28, 28);
       if (ringEquipped && intoxicationDelta > 0) {
         intoxicationDelta = Math.max(1, Math.round(intoxicationDelta * 0.5));
       }
@@ -1568,10 +1768,56 @@ Write ${activeHunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentenc
           ? parsed.visualEffect
           : "mist",
         sceneCaption: String(
-          parsed.visuals?.generate_image ||
-            parsed.sceneCaption ||
+          parsed.sceneCaption ||
             "Warm candlelight and violet mist curl around silk drapes and weathered stone arches."
         ),
+        visualPrompt:
+          sanitizeComfyFragment(
+            parsed.visualPrompt || parsed.visuals?.generate_image || parsed.visual_prompt,
+            320
+          ) ||
+          buildComfyScenePrompt({
+            sceneCaption: String(parsed.sceneCaption || ""),
+            archetype: activeHunter?.archetype,
+            species: activeHunter?.species,
+            visualTraits: activeHunter?.visualTraits,
+            disposition: DISPOSITION_LIST.includes(parsed.newDisposition)
+              ? parsed.newDisposition
+              : activeHunter?.disposition,
+            embracePose:
+              isSeductionBattle &&
+              typeof parsed.embracePose === "string" &&
+              parsed.embracePose.trim().toLowerCase() !== "none"
+                ? parsed.embracePose.trim()
+                : "",
+            intimacyContact:
+              isSeductionBattle &&
+              (parsed.intimacyContact === "soft" || parsed.intimacyContact === "deep")
+                ? parsed.intimacyContact
+                : "none",
+            entityStance: !isSeductionBattle
+              ? "distant"
+              : ENTITY_STANCES.includes(parsed.entityStance)
+              ? parsed.entityStance
+              : "close",
+            sceneBackdrop: SCENE_BACKDROPS.includes(parsed.sceneBackdrop)
+              ? parsed.sceneBackdrop
+              : tileExamined
+              ? fallbackBackdrop
+              : "corridor",
+            lightingMood: LIGHTING_MOODS.includes(parsed.lightingMood)
+              ? parsed.lightingMood
+              : sensoryOverload
+              ? "overload_haze"
+              : isSeductionBattle
+              ? "candlelit_rose"
+              : "violet_mist",
+            visualEffect: VISUAL_EFFECTS.includes(parsed.visualEffect)
+              ? parsed.visualEffect
+              : "mist",
+            intoxication,
+            isBattle: isSeductionBattle,
+          }),
         battleEnded:
           isSeductionBattle &&
           tileEvent !== "ambush_start" &&
@@ -1614,15 +1860,17 @@ Write ${activeHunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentenc
 
       res.json(safeOutcome);
     } catch (err: any) {
-      console.warn("AI turn failed or timed out. Falling back to procedural engine:", err?.message || err);
-      {
-    } catch (err) {
       const { status, message } = extractErrorMessage(err);
-      if (
-        isQuotaExceeded(status, message) ||
-        status >= 400 ||
-        /abort|timeout|fetch|econn|network|tunnel|unavailable/i.test(message)
-      ) {
+      const quotaHit = isQuotaExceeded(status, message);
+      console.info(
+        quotaHit
+          ? "[Game] Turn fallback: Gemini quota reached; using procedural engine."
+          : `[Game] Turn fallback: ${message.slice(0, 140)}`
+      );
+      const quotaNotice = quotaHit
+        ? "Gemini free-tier quota exceeded — using local procedural narration. Connect Google Colab in AI Brain or update your API key in Settings > Secrets for live AI."
+        : undefined;
+      {
         const body = req.body ?? {};
         const protag = String(body.protagonistName ?? "Ket");
         const isSeductionBattle = body.gameMode === "SEDUCTION_BATTLE";
@@ -1698,6 +1946,27 @@ Write ${activeHunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentenc
             sceneCaption: !tileExamined
               ? `Ket waits outside the closed ${doorLabel}, listening to the air beyond.`
               : `Candlelight and rose haze drift softly across ${roomName}.`,
+            visualPrompt: buildComfyScenePrompt({
+              sceneCaption: !tileExamined
+                ? `closed ${doorLabel}, rose-tinted mist curling beneath doorway`
+                : `${roomName}, candlelit gothic chamber`,
+              sceneBackdrop: tileExamined ? tileBackdrop : "corridor",
+              lightingMood: !tileExamined
+                ? "violet_mist"
+                : tileBackdrop === "bedroom"
+                ? "candlelit_rose"
+                : tileBackdrop === "sanctuary"
+                ? "sanctuary_silver"
+                : "violet_mist",
+              visualEffect: !tileExamined
+                ? "mist"
+                : tileBackdrop === "bedroom"
+                ? "petals"
+                : tileBackdrop === "conservatory"
+                ? "spores"
+                : "mist",
+              isBattle: false,
+            }),
             battleEnded: "none",
             intoxicationDelta:
               intent === "anchor"
@@ -1731,6 +2000,7 @@ Write ${activeHunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentenc
               { id: "c3", label: "Listen closely near the doorway", intent: "social", riskLabel: "Social" },
               { id: "c4", label: "Trace the woven cord at your wrist", intent: "mental", riskLabel: "Mental" },
             ],
+            ...(quotaNotice ? { aiNotice: quotaNotice } : {}),
           });
           return;
         }
@@ -1919,6 +2189,33 @@ Write ${activeHunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentenc
             : isReciprocate
             ? `${protag} and ${hunterName} share a breathless ${flavor.kissPose} beneath candlelit rose mist.`
             : `${hunterName} leans close inside ${roomName}, trailing warm velvet mist around ${protag}.`,
+          visualPrompt: buildComfyScenePrompt({
+            archetype: hunterArch,
+            species: hunter?.species,
+            visualTraits: hunter?.visualTraits,
+            disposition:
+              endReason === "charmed"
+                ? "Charmed"
+                : isRivalry
+                ? "Wary"
+                : isWait
+                ? "Hungry"
+                : "Amused",
+            stage: isReciprocate ? "kiss" : isWait ? "deep" : "close",
+            embracePose: isRivalry
+              ? "Jealous Standoff"
+              : isReciprocate
+              ? flavor.kissPose
+              : isWait
+              ? flavor.pose
+              : "",
+            intimacyContact: isRivalry ? "none" : isReciprocate || isWait ? "deep" : "soft",
+            entityStance: isRivalry ? "threshold" : isReciprocate || isWait ? "embrace" : "close",
+            sceneBackdrop: tileBackdrop,
+            lightingMood: isReciprocate || isWait ? "candlelit_rose" : "violet_mist",
+            visualEffect: isReciprocate ? "petals" : tileBackdrop === "conservatory" ? "spores" : "petals",
+            isBattle: true,
+          }),
           battleEnded: endReason,
           intoxicationDelta:
             intent === "anchor"
@@ -1968,6 +2265,7 @@ Write ${activeHunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentenc
             { id: "b3", label: "Flirt back to break her composure", intent: "social", riskLabel: "Social" },
             { id: "b4", label: "Clasp your woven Anchor cord", intent: "mental", riskLabel: "Mental" },
           ],
+          ...(quotaNotice ? { aiNotice: quotaNotice } : {}),
         });
         return;
       }
