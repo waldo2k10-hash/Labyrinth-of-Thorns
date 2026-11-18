@@ -18,6 +18,351 @@ const ai = new GoogleGenAI({
 
 const MODEL_NAME = "gemini-4-hydrogen";
 
+interface ExternalOpenAiConfig {
+  chatUrl: string;
+  modelsUrl: string;
+  apiKey: string;
+  defaultModel: string;
+  providerLabel: string;
+  endpointHost: string;
+}
+
+function isDisallowedTunnelHost(hostname: string): boolean {
+  const host = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (
+    host === "localhost" ||
+    host === "0.0.0.0" ||
+    host === "::1" ||
+    host.endsWith(".local") ||
+    host.endsWith(".internal")
+  ) {
+    return true;
+  }
+  if (
+    /^127\./.test(host) ||
+    /^10\./.test(host) ||
+    /^192\.168\./.test(host) ||
+    /^169\.254\./.test(host) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+    /^fc00:/i.test(host) ||
+    /^fe80:/i.test(host)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function buildColabTunnelConfig(rawUrl: string): ExternalOpenAiConfig | null {
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== "https:" || isDisallowedTunnelHost(parsed.hostname)) {
+    return null;
+  }
+
+  const clean = trimmed
+    .replace(/\/+$/, "")
+    .replace(/\/chat\/completions$/i, "")
+    .replace(/\/models$/i, "");
+  const baseV1 = /\/v1$/i.test(clean) ? clean : `${clean}/v1`;
+  const hostLower = parsed.host.toLowerCase();
+  const providerLabel = hostLower.includes("trycloudflare")
+    ? "Google Colab (Cloudflare)"
+    : hostLower.includes("ngrok")
+    ? "Google Colab (ngrok)"
+    : "Google Colab Tunnel";
+
+  return {
+    chatUrl: `${baseV1}/chat/completions`,
+    modelsUrl: `${baseV1}/models`,
+    apiKey: "",
+    defaultModel: "",
+    providerLabel,
+    endpointHost: parsed.host,
+  };
+}
+
+function getLocalLmStudioConfig(): ExternalOpenAiConfig | null {
+  const rawUrl = process.env.LM_STUDIO_URL?.trim();
+  if (!rawUrl) return null;
+
+  const clean = rawUrl.replace(/\/+$/, "");
+  const hasCompletionsSuffix = /\/chat\/completions$/i.test(clean);
+  const chatUrl = hasCompletionsSuffix ? clean : `${clean}/chat/completions`;
+  const modelsUrl = hasCompletionsSuffix
+    ? clean.replace(/\/chat\/completions$/i, "/models")
+    : `${clean}/models`;
+
+  const apiKey = process.env.LM_STUDIO_API_KEY?.trim() || "";
+  const defaultModel = process.env.LM_STUDIO_MODEL?.trim() || "";
+
+  let endpointHost = clean;
+  try {
+    endpointHost = new URL(chatUrl).host;
+  } catch {
+    // Keep sanitized URL string as fallback label
+  }
+
+  return {
+    chatUrl,
+    modelsUrl,
+    apiKey,
+    defaultModel,
+    providerLabel: "LM Studio",
+    endpointHost,
+  };
+}
+
+function toJsonSchema(node: unknown): Record<string, unknown> {
+  if (!node || typeof node !== "object") return {};
+  const obj = node as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+
+  const typeMap: Record<string, string> = {
+    OBJECT: "object",
+    STRING: "string",
+    INTEGER: "integer",
+    NUMBER: "number",
+    BOOLEAN: "boolean",
+    ARRAY: "array",
+  };
+
+  if (typeof obj.type === "string") {
+    out.type = typeMap[obj.type] ?? obj.type.toLowerCase();
+  }
+  if (Array.isArray(obj.enum)) {
+    out.enum = obj.enum;
+  }
+  if (Array.isArray(obj.required)) {
+    out.required = obj.required;
+  }
+  if (obj.properties && typeof obj.properties === "object") {
+    const props: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(obj.properties as Record<string, unknown>)) {
+      props[k] = toJsonSchema(v);
+    }
+    out.properties = props;
+    out.additionalProperties = false;
+  }
+  if (obj.items) {
+    out.items = toJsonSchema(obj.items);
+  }
+  return out;
+}
+
+function extractJsonObject(rawText: string): Record<string, unknown> {
+  const stripped = rawText
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "")
+    .trim();
+  const firstBrace = stripped.indexOf("{");
+  const lastBrace = stripped.lastIndexOf("}");
+  const candidate =
+    firstBrace !== -1 && lastBrace > firstBrace
+      ? stripped.slice(firstBrace, lastBrace + 1)
+      : stripped;
+  return JSON.parse(candidate) as Record<string, unknown>;
+}
+
+async function fetchExternalModels(
+  config: ExternalOpenAiConfig,
+  timeoutMs = 12000
+): Promise<string[]> {
+  try {
+    const headers: Record<string, string> = {};
+    if (config.apiKey) {
+      headers.Authorization = `Bearer ${config.apiKey}`;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(config.modelsUrl, { headers, signal: controller.signal });
+      if (!res.ok) return [];
+      const data = (await res.json()) as { data?: Array<{ id?: string }> };
+      return (data.data ?? [])
+        .map((m) => m.id)
+        .filter((id): id is string => typeof id === "string" && id.trim().length > 0);
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch {
+    return [];
+  }
+}
+
+async function resolveExternalModel(
+  config: ExternalOpenAiConfig,
+  overrideModel?: string
+): Promise<string> {
+  const requested = overrideModel?.trim();
+  if (requested) return requested;
+  if (config.defaultModel) return config.defaultModel;
+  const models = await fetchExternalModels(config, 5000);
+  if (models.length > 0) return models[0];
+  return "nemotron-8b-ultralong:latest";
+}
+
+async function callOpenAiCompatibleJson(
+  config: ExternalOpenAiConfig,
+  prompt: string,
+  schemaName: string,
+  geminiSchema: Record<string, unknown>,
+  options?: { overrideModel?: string; systemPrompt?: string; maxTokens?: number }
+): Promise<Record<string, unknown>> {
+  const model = await resolveExternalModel(config, options?.overrideModel);
+  const jsonSchema = toJsonSchema(geminiSchema);
+  const systemMessage =
+    options?.systemPrompt ||
+    "You are the Roleplay & Game Master JSON engine for The Euphoric Void. Always respond with valid JSON matching the requested fields and nothing else.";
+
+  const runRequest = async (useSchemaFormat: boolean) => {
+    const body: Record<string, unknown> = {
+      model,
+      messages: [
+        { role: "system", content: systemMessage },
+        {
+          role: "user",
+          content: useSchemaFormat
+            ? prompt
+            : `${prompt}\n\nReturn ONLY a valid JSON object matching schema keys: ${JSON.stringify(jsonSchema)}`,
+        },
+      ],
+      temperature: 0.8,
+      max_tokens: options?.maxTokens ?? 1800,
+    };
+
+    if (useSchemaFormat) {
+      body.response_format = {
+        type: "json_schema",
+        json_schema: {
+          name: schemaName,
+          strict: true,
+          schema: jsonSchema,
+        },
+      };
+    }
+
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+    };
+    if (config.apiKey) {
+      headers.Authorization = `Bearer ${config.apiKey}`;
+    }
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 35000);
+    let response: Response;
+    try {
+      response = await fetch(config.chatUrl, {
+        method: "POST",
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify(body),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+
+    if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      const err = new Error(
+        `${config.providerLabel} error (${response.status}): ${errText || response.statusText}`
+      ) as Error & { status?: number };
+      err.status = response.status;
+      throw err;
+    }
+
+    const payload = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>;
+    };
+    const content = payload.choices?.[0]?.message?.content ?? "{}";
+    return extractJsonObject(content);
+  };
+
+  try {
+    return await runRequest(true);
+  } catch (err) {
+    const { status } = extractErrorMessage(err);
+    if (status === 400 || status === 422 || err instanceof SyntaxError) {
+      return await runRequest(false);
+    }
+    throw err;
+  }
+}
+
+async function callGeminiJson(
+  prompt: string,
+  geminiSchema: Record<string, unknown>
+): Promise<Record<string, unknown>> {
+  const response = await withRetry(() =>
+    ai.models.generateContent({
+      model: MODEL_NAME,
+      contents: prompt,
+      config: {
+        thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
+        responseMimeType: "application/json",
+        responseSchema: geminiSchema,
+      },
+    })
+  );
+
+  const raw = (response.text ?? "{}").trim();
+  return extractJsonObject(raw);
+}
+
+async function callBrainJson(
+  prompt: string,
+  schemaName: string,
+  geminiSchema: Record<string, unknown>,
+  options?: { overrideModel?: string; brainScope?: string; colabUrl?: string }
+): Promise<Record<string, unknown>> {
+  const colabConfig = options?.colabUrl ? buildColabTunnelConfig(options.colabUrl) : null;
+  const lmStudioConfig = getLocalLmStudioConfig();
+  const hasGemini = Boolean(process.env.GEMINI_API_KEY?.trim());
+
+  if (colabConfig) {
+    if (options?.brainScope === "npc_only") {
+      if (hasGemini) {
+        return callGeminiJson(prompt, geminiSchema);
+      }
+      if (lmStudioConfig) {
+        return callOpenAiCompatibleJson(lmStudioConfig, prompt, schemaName, geminiSchema);
+      }
+    }
+    try {
+      return await callOpenAiCompatibleJson(colabConfig, prompt, schemaName, geminiSchema, {
+        overrideModel: options?.overrideModel,
+      });
+    } catch (colabErr) {
+      if (hasGemini) {
+        return callGeminiJson(prompt, geminiSchema);
+      }
+      throw colabErr;
+    }
+  }
+
+  if (lmStudioConfig && (options?.brainScope !== "npc_only" || !hasGemini)) {
+    try {
+      return await callOpenAiCompatibleJson(lmStudioConfig, prompt, schemaName, geminiSchema, {
+        overrideModel: options?.overrideModel,
+      });
+    } catch (lmErr) {
+      if (hasGemini) {
+        return callGeminiJson(prompt, geminiSchema);
+      }
+      throw lmErr;
+    }
+  }
+
+  return callGeminiJson(prompt, geminiSchema);
+}
+
 const ARCHETYPE_LIST = [
   "arachne",
   "lamia",
@@ -76,10 +421,10 @@ function extractErrorMessage(err: unknown): { status: number; message: string } 
   if (err && typeof err === "object") {
     const anyErr = err as { status?: number; message?: string };
     const status = typeof anyErr.status === "number" ? anyErr.status : 500;
-    const message = anyErr.message || "Unexpected server error while contacting Gemini.";
+    const message = anyErr.message || "Unexpected server error while contacting AI brain.";
     return { status, message };
   }
-  return { status: 500, message: "Unexpected server error while contacting Gemini." };
+  return { status: 500, message: "Unexpected server error while contacting AI brain." };
 }
 
 function isQuotaExceeded(status: number, message: string): boolean {
@@ -98,13 +443,6 @@ async function startServer() {
   // Initialize a Dream District floor in The Euphoric Void
   app.post("/api/game/init-session", async (req, res) => {
     try {
-      if (!process.env.GEMINI_API_KEY) {
-        res.status(500).json({
-          error: "GEMINI_API_KEY is not configured in environment secrets.",
-        });
-        return;
-      }
-
       const {
         protagonistName = "Ket",
         floor = 1,
@@ -112,7 +450,23 @@ async function startServer() {
         existingHunterNames = [],
         roomName = "Fractured Threshold",
         charmedCompanions = [],
+        colabUrl = "",
+        colabModel = "",
+        brainScope = "full_turn",
       } = req.body ?? {};
+
+      const colabTunnelConfig =
+        typeof colabUrl === "string" && colabUrl.trim()
+          ? buildColabTunnelConfig(colabUrl)
+          : null;
+
+      if (!colabTunnelConfig && !getLocalLmStudioConfig() && !process.env.GEMINI_API_KEY) {
+        res.status(500).json({
+          error:
+            "Configure a Google Colab tunnel URL in AI Brain (or GEMINI_API_KEY / LM_STUDIO_URL).",
+        });
+        return;
+      }
 
       const sessionSeed = `${Date.now()}-${Math.floor(Math.random() * 100000)}`;
       const companionNote =
@@ -147,80 +501,78 @@ CONTENT & AGENCY GUIDELINES:
   3. intent "social" ([Social])
   4. intent "mental" ([Mental])`;
 
-      const response = await withRetry(() =>
-        ai.models.generateContent({
-          model: MODEL_NAME,
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: "application/json",
-            responseSchema: {
+      const initSchema = {
+        type: Type.OBJECT,
+        properties: {
+          floorTitle: { type: Type.STRING },
+          protagonistOpening: { type: Type.STRING },
+          hunters: {
+            type: Type.ARRAY,
+            items: {
               type: Type.OBJECT,
               properties: {
-                floorTitle: { type: Type.STRING },
-                protagonistOpening: { type: Type.STRING },
-                hunters: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      name: { type: Type.STRING },
-                      title: { type: Type.STRING },
-                      species: { type: Type.STRING },
-                      archetype: { type: Type.STRING, enum: [...ARCHETYPE_LIST] },
-                      desireArchetype: { type: Type.STRING, enum: [...DESIRE_ARCHETYPES] },
-                      npcRole: { type: Type.STRING, enum: [...NPC_ROLES] },
-                      personality: { type: Type.STRING },
-                      huntingStyle: { type: Type.STRING },
-                      weakness: { type: Type.STRING },
-                      visualTraits: { type: Type.STRING },
-                      disposition: { type: Type.STRING, enum: [...DISPOSITION_LIST] },
-                      alertness: { type: Type.INTEGER },
-                      affinity: { type: Type.INTEGER },
-                      lastLine: { type: Type.STRING },
-                    },
-                    required: [
-                      "id",
-                      "name",
-                      "title",
-                      "species",
-                      "archetype",
-                      "desireArchetype",
-                      "npcRole",
-                      "personality",
-                      "huntingStyle",
-                      "weakness",
-                      "visualTraits",
-                      "disposition",
-                      "alertness",
-                      "affinity",
-                      "lastLine",
-                    ],
-                  },
-                },
-                choices: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      label: { type: Type.STRING },
-                      intent: { type: Type.STRING, enum: [...CHOICE_INTENTS] },
-                      riskLabel: { type: Type.STRING },
-                    },
-                    required: ["id", "label", "intent", "riskLabel"],
-                  },
-                },
+                id: { type: Type.STRING },
+                name: { type: Type.STRING },
+                title: { type: Type.STRING },
+                species: { type: Type.STRING },
+                archetype: { type: Type.STRING, enum: [...ARCHETYPE_LIST] },
+                desireArchetype: { type: Type.STRING, enum: [...DESIRE_ARCHETYPES] },
+                npcRole: { type: Type.STRING, enum: [...NPC_ROLES] },
+                personality: { type: Type.STRING },
+                huntingStyle: { type: Type.STRING },
+                weakness: { type: Type.STRING },
+                visualTraits: { type: Type.STRING },
+                disposition: { type: Type.STRING, enum: [...DISPOSITION_LIST] },
+                alertness: { type: Type.INTEGER },
+                affinity: { type: Type.INTEGER },
+                lastLine: { type: Type.STRING },
               },
-              required: ["floorTitle", "protagonistOpening", "hunters", "choices"],
+              required: [
+                "id",
+                "name",
+                "title",
+                "species",
+                "archetype",
+                "desireArchetype",
+                "npcRole",
+                "personality",
+                "huntingStyle",
+                "weakness",
+                "visualTraits",
+                "disposition",
+                "alertness",
+                "affinity",
+                "lastLine",
+              ],
             },
           },
-        })
-      );
+          choices: {
+            type: Type.ARRAY,
+            items: {
+              type: Type.OBJECT,
+              properties: {
+                id: { type: Type.STRING },
+                label: { type: Type.STRING },
+                intent: { type: Type.STRING, enum: [...CHOICE_INTENTS] },
+                riskLabel: { type: Type.STRING },
+              },
+              required: ["id", "label", "intent", "riskLabel"],
+            },
+          },
+        },
+        required: ["floorTitle", "protagonistOpening", "hunters", "choices"],
+      };
 
-      const raw = (response.text ?? "{}").trim();
-      const parsed = JSON.parse(raw);
+      const parsed = (await callBrainJson(prompt, "init_session", initSchema, {
+        overrideModel: typeof colabModel === "string" ? colabModel : undefined,
+        brainScope: typeof brainScope === "string" ? brainScope : undefined,
+        colabUrl: typeof colabUrl === "string" ? colabUrl : undefined,
+      })) as {
+        floorTitle?: string;
+        protagonistOpening?: string;
+        hunters?: Array<Record<string, unknown>>;
+        choices?: Array<Record<string, unknown>>;
+      };
 
       if (Array.isArray(parsed.hunters)) {
         parsed.hunters = parsed.hunters
@@ -256,7 +608,11 @@ CONTENT & AGENCY GUIDELINES:
       res.json(parsed);
     } catch (err) {
       const { status, message } = extractErrorMessage(err);
-      if (isQuotaExceeded(status, message)) {
+      if (
+        isQuotaExceeded(status, message) ||
+        status >= 400 ||
+        /abort|timeout|fetch|econn|network|tunnel|unavailable/i.test(message)
+      ) {
         const floorNum = Number(req.body?.floor ?? 1);
         const room = String(req.body?.roomName ?? "Fractured Threshold");
         const companions = Array.isArray(req.body?.charmedCompanions)
@@ -355,13 +711,6 @@ CONTENT & AGENCY GUIDELINES:
   // Process a turn in The Euphoric Void (Exploration + Seduction Battle)
   app.post("/api/game/turn", async (req, res) => {
     try {
-      if (!process.env.GEMINI_API_KEY) {
-        res.status(500).json({
-          error: "GEMINI_API_KEY is not configured in environment secrets.",
-        });
-        return;
-      }
-
       const SCENE_BACKDROPS = ["bedroom", "corridor", "conservatory", "sanctuary"] as const;
       const LIGHTING_MOODS = [
         "violet_mist",
@@ -401,7 +750,23 @@ CONTENT & AGENCY GUIDELINES:
         hunterDistance = 99,
         recentChronicle = [],
         charmedCompanions = [],
+        colabUrl = "",
+        colabModel = "",
+        brainScope = "full_turn",
       } = req.body ?? {};
+
+      const colabTunnelConfig =
+        typeof colabUrl === "string" && colabUrl.trim()
+          ? buildColabTunnelConfig(colabUrl)
+          : null;
+
+      if (!colabTunnelConfig && !getLocalLmStudioConfig() && !process.env.GEMINI_API_KEY) {
+        res.status(500).json({
+          error:
+            "Configure a Google Colab tunnel URL in AI Brain (or GEMINI_API_KEY / LM_STUDIO_URL).",
+        });
+        return;
+      }
 
       const isSeductionBattle = gameMode === "SEDUCTION_BATTLE";
       const sensoryOverload = intoxication >= 90;
@@ -515,80 +880,160 @@ MECHANICAL RULES:
    - "haven": -16 to -24 intoxicationDelta, +14 to +20 tetherDelta, +14 to +20 selfhoodDelta, -15 hesitationDelta.
 3. "choices": Provide EXACTLY 4 suggested actions covering all 4 skill intents: physical, analytical, social, mental.`;
 
-      const response = await withRetry(() =>
-        ai.models.generateContent({
-          model: MODEL_NAME,
-          contents: prompt,
-          config: {
-            thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
-            responseMimeType: "application/json",
-            responseSchema: {
+      const turnSchema = {
+        type: Type.OBJECT,
+        properties: {
+          protagonistDmText: { type: Type.STRING },
+          hunterDialogue: { type: Type.STRING },
+          hunterActionSummary: { type: Type.STRING },
+          embracePose: { type: Type.STRING },
+          intimacyContact: { type: Type.STRING, enum: ["none", "soft", "deep"] },
+          skillCheckSummary: { type: Type.STRING },
+          newDisposition: { type: Type.STRING, enum: [...DISPOSITION_LIST] },
+          sceneBackdrop: { type: Type.STRING, enum: [...SCENE_BACKDROPS] },
+          lightingMood: { type: Type.STRING, enum: [...LIGHTING_MOODS] },
+          entityStance: { type: Type.STRING, enum: [...ENTITY_STANCES] },
+          visualEffect: { type: Type.STRING, enum: [...VISUAL_EFFECTS] },
+          sceneCaption: { type: Type.STRING },
+          battleEnded: { type: Type.STRING, enum: [...BATTLE_END_STATES] },
+          intoxicationDelta: { type: Type.INTEGER },
+          tetherDelta: { type: Type.INTEGER },
+          selfhoodDelta: { type: Type.INTEGER },
+          hesitationDelta: { type: Type.INTEGER },
+          alertnessDelta: { type: Type.INTEGER },
+          affinityDelta: { type: Type.INTEGER },
+          stunTurns: { type: Type.INTEGER },
+          choices: {
+            type: Type.ARRAY,
+            items: {
               type: Type.OBJECT,
               properties: {
-                protagonistDmText: { type: Type.STRING },
-                hunterDialogue: { type: Type.STRING },
-                hunterActionSummary: { type: Type.STRING },
-                embracePose: { type: Type.STRING },
-                intimacyContact: { type: Type.STRING, enum: ["none", "soft", "deep"] },
-                skillCheckSummary: { type: Type.STRING },
-                newDisposition: { type: Type.STRING, enum: [...DISPOSITION_LIST] },
-                sceneBackdrop: { type: Type.STRING, enum: [...SCENE_BACKDROPS] },
-                lightingMood: { type: Type.STRING, enum: [...LIGHTING_MOODS] },
-                entityStance: { type: Type.STRING, enum: [...ENTITY_STANCES] },
-                visualEffect: { type: Type.STRING, enum: [...VISUAL_EFFECTS] },
-                sceneCaption: { type: Type.STRING },
-                battleEnded: { type: Type.STRING, enum: [...BATTLE_END_STATES] },
-                intoxicationDelta: { type: Type.INTEGER },
-                tetherDelta: { type: Type.INTEGER },
-                selfhoodDelta: { type: Type.INTEGER },
-                hesitationDelta: { type: Type.INTEGER },
-                alertnessDelta: { type: Type.INTEGER },
-                affinityDelta: { type: Type.INTEGER },
-                stunTurns: { type: Type.INTEGER },
-                choices: {
-                  type: Type.ARRAY,
-                  items: {
-                    type: Type.OBJECT,
-                    properties: {
-                      id: { type: Type.STRING },
-                      label: { type: Type.STRING },
-                      intent: { type: Type.STRING, enum: [...CHOICE_INTENTS] },
-                      riskLabel: { type: Type.STRING },
-                    },
-                    required: ["id", "label", "intent", "riskLabel"],
-                  },
-                },
+                id: { type: Type.STRING },
+                label: { type: Type.STRING },
+                intent: { type: Type.STRING, enum: [...CHOICE_INTENTS] },
+                riskLabel: { type: Type.STRING },
               },
-              required: [
-                "protagonistDmText",
-                "hunterDialogue",
-                "hunterActionSummary",
-                "embracePose",
-                "intimacyContact",
-                "skillCheckSummary",
-                "newDisposition",
-                "sceneBackdrop",
-                "lightingMood",
-                "entityStance",
-                "visualEffect",
-                "sceneCaption",
-                "battleEnded",
-                "intoxicationDelta",
-                "tetherDelta",
-                "selfhoodDelta",
-                "hesitationDelta",
-                "alertnessDelta",
-                "affinityDelta",
-                "stunTurns",
-                "choices",
-              ],
+              required: ["id", "label", "intent", "riskLabel"],
             },
           },
-        })
-      );
+        },
+        required: [
+          "protagonistDmText",
+          "hunterDialogue",
+          "hunterActionSummary",
+          "embracePose",
+          "intimacyContact",
+          "skillCheckSummary",
+          "newDisposition",
+          "sceneBackdrop",
+          "lightingMood",
+          "entityStance",
+          "visualEffect",
+          "sceneCaption",
+          "battleEnded",
+          "intoxicationDelta",
+          "tetherDelta",
+          "selfhoodDelta",
+          "hesitationDelta",
+          "alertnessDelta",
+          "affinityDelta",
+          "stunTurns",
+          "choices",
+        ],
+      };
 
-      const raw = (response.text ?? "{}").trim();
-      const parsed = JSON.parse(raw);
+      const overrideModel = typeof colabModel === "string" ? colabModel.trim() : "";
+      const requestedScope = typeof brainScope === "string" ? brainScope : "full_turn";
+      const colabUrlStr = typeof colabUrl === "string" ? colabUrl.trim() : "";
+      const parsed = (await callBrainJson(prompt, "turn_outcome", turnSchema, {
+        overrideModel: overrideModel || undefined,
+        brainScope: requestedScope,
+        colabUrl: colabUrlStr || undefined,
+      })) as Record<string, any>;
+
+      const lmStudioConfig = getLocalLmStudioConfig();
+      const hasGemini = Boolean(process.env.GEMINI_API_KEY?.trim());
+      const npcOverlayTarget =
+        colabTunnelConfig && requestedScope === "npc_only" && (hasGemini || lmStudioConfig)
+          ? colabTunnelConfig
+          : lmStudioConfig && hasGemini && requestedScope === "npc_only"
+          ? lmStudioConfig
+          : null;
+
+      if (npcOverlayTarget && isSeductionBattle && activeHunter) {
+        try {
+          const npcOverlaySchema = {
+            type: Type.OBJECT,
+            properties: {
+              hunterDialogue: { type: Type.STRING },
+              hunterActionSummary: { type: Type.STRING },
+              protagonistDmText: { type: Type.STRING },
+              embracePose: { type: Type.STRING },
+              sceneCaption: { type: Type.STRING },
+            },
+            required: [
+              "hunterDialogue",
+              "hunterActionSummary",
+              "protagonistDmText",
+              "embracePose",
+              "sceneCaption",
+            ],
+          };
+          const npcSystemPrompt = `You are ${activeHunter.name}, ${activeHunter.title} (${activeHunter.species}), inside the PG-13 gothic romance RPG "The Euphoric Void". Keep all scenes romantic, sensory, atmospheric, and strictly non-explicit. Never decide ${protagonistName}'s future choices.`;
+          const npcUserPrompt = `NPC Persona:
+- Name: ${activeHunter.name} (${activeHunter.species}, ${activeHunter.desireArchetype})
+- Personality: ${activeHunter.personality}
+- Style: ${activeHunter.huntingStyle}
+- Current Disposition: ${parsed.newDisposition ?? activeHunter.disposition} · Affinity: ${activeHunter.affinity}/100
+- Location: ${tileExamined ? roomName : doorLabel}
+- Protagonist State: Intoxication ${intoxication}/100, Tether ${tether}/100, Selfhood ${selfhood}/${maxSelfhood}
+- Recent Chronicle: ${JSON.stringify(recentChronicle.slice(-4))}
+- Player Command (${actionIntent}): "${playerAction}"
+- Mechanical Outcome Hint: ${parsed.skillCheckSummary ?? "Contested"} (Battle Ended: ${parsed.battleEnded ?? "none"}, Suggested Pose: ${parsed.embracePose || "None"})
+
+Write ${activeHunter.name}'s direct spoken reply ("hunterDialogue"), a 1-sentence physical/atmospheric action summary ("hunterActionSummary"), a short vivid narration of the moment ("protagonistDmText"), the PG-13 embrace/kiss pose name if close ("embracePose", or "None"), and a 1-sentence visual caption ("sceneCaption").`;
+
+          const npcOverlay = await callOpenAiCompatibleJson(
+            npcOverlayTarget,
+            npcUserPrompt,
+            "npc_reaction",
+            npcOverlaySchema,
+            {
+              overrideModel: overrideModel || undefined,
+              systemPrompt: npcSystemPrompt,
+              maxTokens: 900,
+            }
+          );
+
+          if (typeof npcOverlay.hunterDialogue === "string" && npcOverlay.hunterDialogue.trim()) {
+            parsed.hunterDialogue = npcOverlay.hunterDialogue.trim();
+          }
+          if (
+            typeof npcOverlay.hunterActionSummary === "string" &&
+            npcOverlay.hunterActionSummary.trim()
+          ) {
+            parsed.hunterActionSummary = npcOverlay.hunterActionSummary.trim();
+          }
+          if (
+            typeof npcOverlay.protagonistDmText === "string" &&
+            npcOverlay.protagonistDmText.trim()
+          ) {
+            parsed.protagonistDmText = npcOverlay.protagonistDmText.trim();
+          }
+          if (
+            typeof npcOverlay.embracePose === "string" &&
+            npcOverlay.embracePose.trim() &&
+            npcOverlay.embracePose.trim().toLowerCase() !== "none"
+          ) {
+            parsed.embracePose = npcOverlay.embracePose.trim();
+          }
+          if (typeof npcOverlay.sceneCaption === "string" && npcOverlay.sceneCaption.trim()) {
+            parsed.sceneCaption = npcOverlay.sceneCaption.trim();
+          }
+        } catch {
+          // Keep Gemini mechanical/narration result if external NPC overlay fails
+        }
+      }
 
       let intoxicationDelta = clamp(Number(parsed.intoxicationDelta ?? 0), -28, 28);
       if (ringEquipped && intoxicationDelta > 0) {
@@ -680,7 +1125,11 @@ MECHANICAL RULES:
       res.json(safeOutcome);
     } catch (err) {
       const { status, message } = extractErrorMessage(err);
-      if (isQuotaExceeded(status, message)) {
+      if (
+        isQuotaExceeded(status, message) ||
+        status >= 400 ||
+        /abort|timeout|fetch|econn|network|tunnel|unavailable/i.test(message)
+      ) {
         const body = req.body ?? {};
         const protag = String(body.protagonistName ?? "Ket");
         const isSeductionBattle = body.gameMode === "SEDUCTION_BATTLE";
@@ -1030,6 +1479,123 @@ MECHANICAL RULES:
         return;
       }
       res.status(status).json({ error: message });
+    }
+  });
+
+  app.post("/api/brain/test", async (req, res) => {
+    const requestedColabUrl =
+      typeof req.body?.colabUrl === "string"
+        ? req.body.colabUrl.trim()
+        : typeof req.body?.customUrl === "string"
+        ? req.body.customUrl.trim()
+        : "";
+
+    let config: ExternalOpenAiConfig | null = null;
+    if (requestedColabUrl) {
+      config = buildColabTunnelConfig(requestedColabUrl);
+      if (!config) {
+        res.json({
+          ok: false,
+          configured: false,
+          provider: "Google Colab Tunnel",
+          endpointHost: "",
+          models: [],
+          defaultModel: "",
+          error:
+            "Colab URL must be a valid public https:// URL (e.g. https://xxxx.trycloudflare.com/v1).",
+        });
+        return;
+      }
+    } else {
+      config = getLocalLmStudioConfig();
+    }
+
+    if (!config) {
+      res.json({
+        ok: false,
+        configured: false,
+        provider: "Google Colab",
+        endpointHost: "",
+        models: [],
+        defaultModel: "",
+        error:
+          "Paste your Google Colab tunnel URL (https://...trycloudflare.com/v1) to test the connection.",
+      });
+      return;
+    }
+
+    const requestedModel =
+      typeof req.body?.model === "string" ? req.body.model.trim() : "";
+
+    try {
+      const models = await fetchExternalModels(config);
+      const testModel =
+        requestedModel ||
+        config.defaultModel ||
+        models[0] ||
+        "nemotron-8b-ultralong:latest";
+
+      const headers: Record<string, string> = {
+        "Content-Type": "application/json",
+      };
+      if (config.apiKey) {
+        headers.Authorization = `Bearer ${config.apiKey}`;
+      }
+
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 90000);
+      let pingRes: Response;
+      try {
+        pingRes = await fetch(config.chatUrl, {
+          method: "POST",
+          headers,
+          signal: controller.signal,
+          body: JSON.stringify({
+            model: testModel,
+            messages: [{ role: "user", content: "Reply with OK." }],
+            max_tokens: 12,
+            temperature: 0,
+          }),
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+
+      if (!pingRes.ok) {
+        const errText = await pingRes.text().catch(() => "");
+        res.json({
+          ok: false,
+          configured: true,
+          provider: config.providerLabel,
+          endpointHost: config.endpointHost,
+          models,
+          defaultModel: testModel,
+          error: `${config.providerLabel} returned HTTP ${pingRes.status}: ${
+            errText.slice(0, 180) || pingRes.statusText
+          }`,
+        });
+        return;
+      }
+
+      res.json({
+        ok: true,
+        configured: true,
+        provider: config.providerLabel,
+        endpointHost: config.endpointHost,
+        models,
+        defaultModel: testModel,
+      });
+    } catch (err) {
+      const { message } = extractErrorMessage(err);
+      res.json({
+        ok: false,
+        configured: true,
+        provider: config.providerLabel,
+        endpointHost: config.endpointHost,
+        models: [],
+        defaultModel: requestedModel || config.defaultModel,
+        error: message,
+      });
     }
   });
 

@@ -1,5 +1,5 @@
 import React from "react";
-import { Play, Sparkles, Compass, Heart, BookOpen, RotateCcw } from "lucide-react";
+import { Play, Sparkles, Compass, Heart, BookOpen, RotateCcw, Cpu } from "lucide-react";
 import { TITLE_KEY_ART } from "../utils/portraits";
 import type { DifficultyMode } from "../types/game";
 import { DIFFICULTY_CONFIG } from "../utils/tactics";
@@ -8,6 +8,8 @@ interface TitleScreenProps {
   onStartGame: () => void;
   onContinueGame?: () => void;
   onOpenCompendium: () => void;
+  onOpenLocalBrain?: () => void;
+  localBrainEnabled?: boolean;
   hasSavedRun: boolean;
   savedRunSummary?: { floor: number; maxFloors: number; intoxication: number; turn: number };
   compendiumCount: number;
@@ -20,6 +22,8 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   onStartGame,
   onContinueGame,
   onOpenCompendium,
+  onOpenLocalBrain,
+  localBrainEnabled = false,
   hasSavedRun,
   savedRunSummary,
   compendiumCount,
@@ -136,6 +140,20 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
               <BookOpen className="w-4 h-4 text-rose-300" />
               <span>Void Gallery ({compendiumCount}/28)</span>
             </button>
+
+            {onOpenLocalBrain && (
+              <button
+                onClick={onOpenLocalBrain}
+                className={`inline-flex items-center gap-2 px-4 py-3.5 rounded-lg border text-sm transition cursor-pointer ${
+                  localBrainEnabled
+                    ? "border-rose-400/55 bg-rose-500/20 text-rose-100"
+                    : "border-white/15 bg-[#12131a]/80 hover:bg-[#1a1b24] text-[#f2efe9]/85"
+                }`}
+              >
+                <Cpu className="w-4 h-4 text-rose-300" />
+                <span>{localBrainEnabled ? "AI Brain: On" : "AI Brain"}</span>
+              </button>
+            )}
           </div>
 
           <div className="text-xs font-mono text-[#f2efe9]/50">
