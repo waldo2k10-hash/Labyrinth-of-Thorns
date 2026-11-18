@@ -1,3 +1,5 @@
+import React, { useEffect, useState } from "react";
+import { Play, Sparkles, Compass, Heart, BookOpen, RotateCcw, Cpu, Palette } from "lucide-react";
 import React from "react";
 import { Play, Sparkles, Compass, Heart, BookOpen, RotateCcw, Cpu } from "lucide-react";
 import { TITLE_KEY_ART } from "../utils/portraits";
@@ -31,6 +33,42 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
   onSelectDifficulty,
   loading,
 }) => {
+  const [aiStatus, setAiStatus] = useState<"checking" | "connected" | "fallback">("checking");
+  const [aiMessage, setAiMessage] = useState<string>("");
+  const [comfyStatus, setComfyStatus] = useState<"checking" | "connected" | "offline">("checking");
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/ai/test")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!active) return;
+        if (data.status === "connected") {
+          setAiStatus("connected");
+          setAiMessage(data.message || "Connected to local Void AI");
+        } else {
+          setAiStatus("fallback");
+        }
+      })
+      .catch(() => {
+        if (active) setAiStatus("fallback");
+      });
+
+    fetch("/api/comfy/status")
+      .then((res) => res.json())
+      .then((data) => {
+        if (!active) return;
+        setComfyStatus(data.online ? "connected" : "offline");
+      })
+      .catch(() => {
+        if (active) setComfyStatus("offline");
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
   return (
     <div className="relative min-h-screen w-full overflow-hidden bg-[#0b0c10] text-[#f2efe9] flex items-center justify-center">
       {/* Background Key Art with Vignette */}
@@ -45,9 +83,48 @@ export const TitleScreen: React.FC<TitleScreenProps> = ({
       {/* Content Container */}
       <div className="relative z-10 max-w-6xl w-full px-6 md:px-12 py-12 grid grid-cols-1 lg:grid-cols-12 gap-10 items-center">
         <div className="lg:col-span-7 space-y-6">
-          <div className="inline-flex items-center gap-2 border border-rose-400/35 bg-[#12131a]/80 px-3 py-1 rounded text-xs uppercase tracking-[0.22em] text-rose-200/90">
-            <Sparkles className="w-3.5 h-3.5 text-rose-400" />
-            <span>Gothic Romance · Seduction Battle RPG</span>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="inline-flex items-center gap-2 border border-rose-400/35 bg-[#12131a]/80 px-3 py-1 rounded text-xs uppercase tracking-[0.22em] text-rose-200/90">
+              <Sparkles className="w-3.5 h-3.5 text-rose-400" />
+              <span>Gothic Romance · Seduction Battle RPG</span>
+            </div>
+            <div
+              className={`inline-flex items-center gap-1.5 border px-2.5 py-1 rounded text-xs font-mono ${
+                aiStatus === "connected"
+                  ? "border-emerald-500/40 bg-emerald-950/40 text-emerald-300"
+                  : aiStatus === "checking"
+                  ? "border-amber-500/40 bg-amber-950/30 text-amber-300"
+                  : "border-purple-500/30 bg-purple-950/30 text-purple-300"
+              }`}
+              title={aiMessage}
+            >
+              <Cpu className="w-3 h-3" />
+              <span>
+                {aiStatus === "connected"
+                  ? "Void AI: Connected"
+                  : aiStatus === "checking"
+                  ? "Void AI: Connecting..."
+                  : "Void AI: Procedural Engine"}
+              </span>
+            </div>
+            <div
+              className={`inline-flex items-center gap-1.5 border px-2.5 py-1 rounded text-xs font-mono ${
+                comfyStatus === "connected"
+                  ? "border-pink-500/40 bg-pink-950/40 text-pink-300"
+                  : comfyStatus === "checking"
+                  ? "border-amber-500/40 bg-amber-950/30 text-amber-300"
+                  : "border-white/10 bg-white/5 text-[#f2efe9]/50"
+              }`}
+            >
+              <Palette className="w-3 h-3" />
+              <span>
+                {comfyStatus === "connected"
+                  ? "ComfyUI: Ready"
+                  : comfyStatus === "checking"
+                  ? "ComfyUI: Checking..."
+                  : "ComfyUI: Offline"}
+              </span>
+            </div>
           </div>
 
           <div className="space-y-2">

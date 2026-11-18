@@ -1,5 +1,5 @@
-import React, { useEffect, useRef } from "react";
-import { Heart, Sparkles, DoorOpen, Users } from "lucide-react";
+import React, { useEffect, useRef, useState } from "react";
+import { Heart, Sparkles, DoorOpen, Users, Palette, Loader2 } from "lucide-react";
 import type {
   ArchetypeId,
   EntityStance,
@@ -71,6 +71,52 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
   tether,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const [comfyArtwork, setComfyArtwork] = useState<string | null>(null);
+  const [isGenerating, setIsGenerating] = useState<boolean>(false);
+  const [comfyAvailable, setComfyAvailable] = useState<boolean>(false);
+
+  useEffect(() => {
+    let active = true;
+    fetch("/api/comfy/status")
+      .then((r) => r.json())
+      .then((d) => {
+        if (active) setComfyAvailable(Boolean(d.online));
+      })
+      .catch(() => {
+        if (active) setComfyAvailable(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    setComfyArtwork(null);
+  }, [activeHunter?.id]);
+
+  const handleGenerateArtwork = async () => {
+    if (isGenerating) return;
+    setIsGenerating(true);
+    try {
+      const res = await fetch("/api/comfy/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          archetype: activeHunter?.archetype || "succubus",
+          stage: tier,
+          visualTraits: activeHunter?.visualTraits || "",
+        }),
+      });
+      const data = await res.json();
+      if (data.ok && data.url) {
+        setComfyArtwork(data.url);
+      }
+    } catch (e) {
+      console.error("Failed to generate ComfyUI artwork:", e);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
 
   const isBattle = gameMode === "SEDUCTION_BATTLE" && Boolean(activeHunter);
 
@@ -207,7 +253,7 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
       {/* Main Scene Backdrop / Tiered Battle Artwork */}
       <div className="relative h-64 sm:h-80 w-full overflow-hidden">
         <img
-          src={primaryArtwork}
+          src={comfyArtwork || primaryArtwork}
           alt={
             companionMoment
               ? companionMoment.pose
@@ -238,6 +284,27 @@ export const EncounterStage: React.FC<EncounterStageProps> = ({
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
+            {comfyAvailable && isBattle && activeHunter && (
+              <button
+                type="button"
+                onClick={handleGenerateArtwork}
+                disabled={isGenerating}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-pink-950/85 hover:bg-pink-900 border border-pink-400/50 px-2.5 py-1 text-[11px] font-mono text-pink-100 transition cursor-pointer disabled:opacity-60 shadow-lg shadow-pink-950/40"
+                title="Manifest live artwork via local ComfyUI instance"
+              >
+                {isGenerating ? (
+                  <>
+                    <Loader2 className="w-3 h-3 text-pink-300 animate-spin" />
+                    <span>Painting scene...</span>
+                  </>
+                ) : (
+                  <>
+                    <Palette className="w-3 h-3 text-pink-300" />
+                    <span>{comfyArtwork ? "Repaint Scene" : "Manifest Scene (ComfyUI)"}</span>
+                  </>
+                )}
+              </button>
+            )}
             {tierLabel && (
               <span className="inline-flex items-center gap-1.5 rounded-lg bg-rose-950/85 border border-rose-400/45 px-2.5 py-1 text-[11px] font-mono text-rose-100">
                 <Heart className="w-3 h-3 text-rose-300 fill-rose-400/40" />
